@@ -6,7 +6,7 @@ ConfigManager is a C++ library for configuration versioning, migration, and sync
 
 Its primary goal is:
 
-> Ensure that persisted configuration data can be synchronized to the configuration version expected by an application.
+> Prevent configuration version drift and automatically repair common configuration inconsistencies, ensuring that persisted configuration data can be synchronized to the configuration version expected by an application.
 
 ConfigManager is intentionally not:
 
@@ -39,7 +39,7 @@ auto state =
         config,
         supportedVersion);
 
-if (!state.synchronized)
+if (state.status == SyncStatus::UpgradeRequired)
 {
     runtime.synchronize(
         config,
@@ -115,31 +115,26 @@ Result<T>
 ```text
 Application
       |
+      v
+
+ ConfigRuntime
       |
-      +--------------------+
-      |                    |
-      v                    v
+      +-------------------+-------------------+
+      |                   |                   |
+      v                   v                   v
 
- ConfigRuntime      MigrationEngine
-      |                    |
-      +---------+----------+
-                |
-                v
-
-         VersionCatalog
-                |
-                v
-
-        VersionedConfig
-                |
-                v
-
-           ConfigModel
-                |
-                v
-
-        ConfigInterface
+VersionCatalog      MigrationEngine     VersionedConfig
+                         |                    |
+                         v                    v
+                  MigrationRegistry      ConfigModel
+                                              |
+                                              v
+                                        ConfigInterface
 ```
+
+`ConfigRuntime` owns both `VersionCatalog` and `MigrationRegistry`, and
+drives `MigrationEngine`. `MigrationEngine` resolves migrations through
+`MigrationRegistry`.
 
 ---
 
@@ -227,6 +222,18 @@ Non-responsibilities:
 * Migration
 * Synchronization
 * Version management
+* Repair
+
+`load()` only parses and deserializes. It never modifies, repairs, or
+migrates the configuration. Repair and migration belong exclusively to
+`ConfigRuntime`.
+
+Each ConfigInterface implementation is responsible for serializing,
+deserializing, and reading/writing the configuration version according
+to its storage format.
+
+The library does not impose a common serialization envelope across
+different configuration formats.
 
 Implementations:
 
@@ -241,14 +248,14 @@ IniInterface
 
 ## VersionCatalog
 
-Authoritative source of version artifacts.
+Authoritative source of version metadata.
 
 Responsibilities:
 
 * Register versions
-* Register migrations
-* Register default configuration factories
-* Resolve migration paths
+* Provide default configuration factories
+* Provide the latest known version
+* Provide version metadata
 
 Example:
 
@@ -262,11 +269,47 @@ catalog.registerVersion(
 ```
 
 ```cpp
-catalog.registerMigration(
+catalog.latestVersion();
+
+catalog.defaultFactory(4);
+```
+
+Non-responsibilities:
+
+* Registering migrations
+* Resolving migration paths
+
+---
+
+## MigrationRegistry
+
+Authoritative source of migrations.
+
+Responsibilities:
+
+* Register migrations
+* Find migrations between adjacent versions
+* Validate the registered migration set
+
+Example:
+
+```cpp
+registry.registerMigration(
     3,
     4,
     migrateV3ToV4);
 ```
+
+```cpp
+registry.findMigration(3, 4);
+
+registry.validate();
+```
+
+Non-responsibilities:
+
+* Version metadata
+* Default configuration factories
 
 ---
 
@@ -276,7 +319,7 @@ Performs configuration transformations between versions.
 
 Responsibilities:
 
-* Build migration paths
+* Resolve migration paths via MigrationRegistry
 * Execute migrations
 * Update configuration versions
 
@@ -303,11 +346,23 @@ Migration APIs never accept a source version parameter.
 
 High-level synchronization service.
 
+`ConfigRuntime` owns the configuration lifecycle components:
+
+```text
+ConfigRuntime
+    |
+    +-- VersionCatalog
+    +-- MigrationRegistry
+    +-- MigrationEngine
+```
+
 Responsibilities:
 
 * Inspect configuration state
 * Determine synchronization requirements
+* Own the entire synchronization pipeline
 * Invoke MigrationEngine
+* Repair configurations using version defaults
 * Create default configurations
 
 Example:
@@ -354,7 +409,7 @@ Migration relationships form a directed graph.
 v1 -> v2 -> v3 -> v4
 ```
 
-Preferred migration strategy:
+Only adjacent version migrations are supported.
 
 ```text
 v1 -> v2
@@ -362,13 +417,29 @@ v2 -> v3
 v3 -> v4
 ```
 
-Avoid direct jumps:
+Direct migrations (v1 -> v4) are intentionally unsupported.
 
-```text
-v1 -> v4
-```
+This keeps migrations small, deterministic, and easy to maintain.
 
-unless explicitly required.
+---
+
+# Registry Validation
+
+During ConfigRuntime construction, the MigrationRegistry is validated
+against the versions declared in the VersionCatalog.
+
+Validation includes:
+
+* Every version has a migration to the next version, up to the latest.
+* No duplicate migrations exist.
+* Migration versions reference versions known to the VersionCatalog.
+* Only adjacent migrations may be registered.
+
+If validation fails, ConfigRuntime construction fails before any
+configuration can be synchronized.
+
+This gives developers immediate feedback rather than discovering
+problems in the field.
 
 ---
 
@@ -392,9 +463,38 @@ struct SyncState
 
     VersionId targetVersion;
 
-    bool synchronized;
+    SyncStatus status;
 };
 ```
+
+The synchronization status is represented explicitly:
+
+```cpp
+enum class SyncStatus
+{
+    InSync,
+
+    UpgradeRequired,
+
+    DowngradeRequired,
+
+    UnSynced
+};
+```
+
+* **InSync** – Configuration matches the application's supported version.
+* **UpgradeRequired** – Configuration is older and can be migrated.
+* **DowngradeRequired** – Configuration is newer than the application supports.
+* **UnSynced** – Synchronization could not complete due to migration or repair errors.
+
+Because migrations are forward-only, a newer configuration cannot be
+downgraded. When the configuration version is newer than the
+application's supported version:
+
+* `synchronize()` performs no modifications.
+* No repair is attempted.
+* `SyncStatus::DowngradeRequired` is returned.
+* The application must decide how to proceed.
 
 ---
 
@@ -406,21 +506,80 @@ runtime.synchronize(
     supportedVersion);
 ```
 
-Workflow:
+Synchronization is a single pipeline owned entirely by `ConfigRuntime`.
+There is exactly one place migration happens, exactly one place repair
+happens, and exactly one commit point.
 
 ```text
-Determine Current Version
-          |
-Determine Target Version
-          |
-Resolve Migration Path
-          |
-Invoke MigrationEngine
-          |
-Update Version
+                 synchronize()
+                       |
+              Determine SyncStatus
+                       |
+        InSync ----------------------> return
+                       |
+        DowngradeRequired -----------> return
+                       |
+        UpgradeRequired
+                       |
+              Copy configuration
+                       |
+          Apply incremental migrations
+                       |
+            Repair missing fields
+                       |
+            Success? ------------------ No
+                 |                       |
+                 | Yes                   v
+                 v               MigrationFailed
+          Replace original
+                 |
+                 v
+               InSync
 ```
 
 Synchronization is always explicit.
+
+---
+
+## Synchronization Guarantees
+
+Synchronization is transactional with respect to the in-memory VersionedConfig.
+
+* Migrations are executed on a temporary working copy.
+* The original VersionedConfig remains unchanged until all migration
+  and repair steps complete successfully.
+* The caller's configuration is only updated after successful completion.
+* The library never writes to persistent storage. Saving the migrated
+  configuration remains the responsibility of the application.
+
+---
+
+## Configuration Repair
+
+Repair is performed by `ConfigRuntime` as a step of the synchronization
+pipeline. It is never performed during `load()`.
+
+Repair runs once, after all migrations complete, using the target
+version's default configuration, and before the single commit point.
+
+Repair will:
+
+* Add missing keys using the target version's default values.
+
+Repair will not:
+
+* Replace existing values
+* Validate types
+* Remove unknown keys
+* Enforce schema constraints
+
+This allows ConfigManager to recover from common configuration drift
+without introducing a full schema validation framework, and keeps the
+library from slowly turning into a schema validator.
+
+Because repair runs after migration, migration authors never rely on
+repair to populate fields. A migration that needs a field creates it
+explicitly. This keeps migrations deterministic.
 
 ---
 
@@ -520,14 +679,16 @@ enum class ErrorCode
 ```
 
 ```cpp
-class Error
+struct Error
 {
-public:
-    ErrorCode code() const;
+    ErrorCode code;
 
-    std::string_view message() const;
+    std::string message;
 };
 ```
+
+An owned string avoids lifetime issues and allows richer diagnostic
+messages.
 
 ---
 
@@ -563,6 +724,24 @@ Version 1 does not support escaping.
 
 ---
 
+## Path Semantics
+
+Path creation follows upsert semantics.
+
+If intermediate nodes do not exist they are automatically created.
+
+Example:
+
+```cpp
+set("network.timeout", 10)
+```
+
+creates "network" if necessary before writing "timeout".
+
+This makes writing migrations much simpler and more predictable.
+
+---
+
 # ConfigNode Lifetime
 
 ConfigModel owns all storage.
@@ -577,6 +756,14 @@ A ConfigNode remains valid until:
 Moving nodes does not invalidate handles.
 
 Removing nodes invalidates handles referencing those nodes.
+
+---
+
+# Thread Safety
+
+ConfigRuntime and ConfigModel are not thread-safe.
+
+Concurrent access must be synchronized by the application.
 
 ---
 
@@ -635,3 +822,67 @@ VersionedConfig is the authoritative source of the current configuration version
 Migration APIs accept only a target version.
 
 The current version is never supplied by callers.
+
+---
+
+## ADR-008
+
+Migrations are adjacent-only and forward-only.
+
+Only migrations between adjacent versions are supported. Direct migrations
+between non-adjacent versions are intentionally unsupported, keeping migrations
+small, deterministic, and easy to maintain.
+
+A configuration newer than the application's supported version cannot be
+downgraded. On DowngradeRequired, synchronize() performs no modification and
+returns the status; the application decides how to proceed.
+
+---
+
+## ADR-009
+
+Synchronization is a single transactional pipeline owned entirely by
+ConfigRuntime: determine status, copy, migrate, repair, then commit.
+
+Migration and repair run on a working copy, and the caller's configuration is
+updated only after successful completion. There is exactly one place migration
+happens, one place repair happens, and one commit point, making runtime behavior
+deterministic.
+
+---
+
+## ADR-010
+
+ConfigManager performs lightweight repair as a step of the synchronization
+pipeline, never during load. Repair runs once, after migrations complete,
+backfilling missing fields from the target version's default configuration.
+
+Repair never overwrites existing values, never removes unknown fields, never
+corrects types, and does not perform schema validation.
+
+---
+
+## ADR-011
+
+The MigrationRegistry is validated during ConfigRuntime construction against
+the versions declared in the VersionCatalog.
+
+If validation fails, construction fails before any configuration can be
+synchronized, surfacing registration errors immediately rather than in the field.
+
+---
+
+## ADR-012
+
+VersionCatalog and MigrationRegistry are separate components.
+
+VersionCatalog owns version metadata and default factories. MigrationRegistry
+owns migrations and their validation. ConfigRuntime owns both. This keeps each
+component aligned with a single responsibility.
+
+---
+
+## ADR-013
+
+load() only parses and deserializes. It never modifies, repairs, or migrates
+the configuration. This keeps configuration backends free of business logic.
