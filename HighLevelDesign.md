@@ -106,9 +106,12 @@ using Result = tl::expected<T, Error>;
   later: only `result.hpp` references the underlying type.
 * Non-throwing boundary (ADR-018): exceptions other than `std::bad_alloc`
   from user-supplied callbacks (`MigrationFn`, `DefaultFactory`) are caught at
-  the invocation site and mapped to `MigrationFailed`, preserving `what()` in
-  `Error::message`. `std::bad_alloc` is not a recoverable configuration error
-  and may propagate from anywhere, including callbacks.
+  the invocation site and mapped to `MigrationFailed`. Exceptions derived from
+  `std::exception` preserve `what()` in `Error::message`; any other thrown
+  type gets the fixed message "unknown exception from user callback". The
+  boundary catches `std::bad_alloc` first and rethrows it: memory exhaustion
+  is not a recoverable configuration error and may propagate from anywhere,
+  including callbacks.
 
 ### 3.2 Versioning (`version.hpp`)
 
@@ -129,8 +132,9 @@ struct VersionArtifact {
 `DefaultFactory` returns a `ConfigValue` (the value-semantic tree, §4.1);
 `VersionCatalog::createDefault` adopts it into a `ConfigModel` via
 `ConfigModel::fromValue`, so there is exactly one conversion path between the
-two tree representations. The returned tree must be object-rooted (§4.1); a
-factory that throws is caught and mapped to `MigrationFailed` (ADR-018).
+two tree representations. The returned tree must be object-rooted (§4.1) and
+use path-addressable keys (ADR-021); a factory that throws is caught and
+mapped to `MigrationFailed` (ADR-018).
 
 ---
 
@@ -187,14 +191,20 @@ public:
     ConfigValue& push(ConfigValue child);                   // array
     // ...
 private:
-    Scalar                                       scalar_;
-    std::map<std::string, ConfigValue>           object_;   // ordered => deterministic
-    std::vector<ConfigValue>                     array_;
+    Scalar                                            scalar_;
+    std::vector<std::pair<std::string, ConfigValue>>  object_;  // insertion-ordered
+    std::vector<ConfigValue>                          array_;
 };
 ```
 
-`std::map` (ordered) is chosen over `unordered_map` so serialization and repair
-are **deterministic**, which matters for diffing and reproducible migrations.
+Object members are stored in **insertion order** — the same ordering rule the
+arena uses (§4.2) — so there is exactly one member-ordering rule in the library
+(ADR-022). A document keeps its author's key order through load → mutate →
+save, and a subtree round-tripped through `getValue`/`set` preserves member
+order; `ConfigValue::set` on an existing key replaces the value in place
+without moving the member. One ordering rule everywhere keeps serialization
+and repair **deterministic**, which matters for diffing and reproducible
+migrations.
 
 ### 4.2 Internal storage: a generation-checked arena
 
@@ -336,6 +346,11 @@ Key behaviors:
 * There is **no dedicated rename/move API**. A rename composes from the common
   flow shared by all operations: `getValue(from)` → `set(to, value)` →
   `remove(from)`.
+* The scalar `set<T>` template is constrained to exclude `ConfigValue`, so
+  subtree insertion unambiguously selects the `ConfigValue` overload.
+* `fromValue` rejects a non-object root with `InvalidType` and any object key
+  containing a reserved path character with `InvalidPath` (ADR-021); the
+  subtree `set` overload applies the same key check to the inserted value.
 * `clone()` provides the deep copy that `ConfigRuntime::synchronize` runs on.
 
 ### 4.5 ConfigPath (`config_path.hpp`)
@@ -361,6 +376,9 @@ public:
 * Reserved characters: `.` `[` `]`. **No escaping in v1** (explicit non-goal).
 * The empty string is invalid (`InvalidPath`). No string path addresses the
   root node; the root is reached via `ConfigModel::root()`.
+* No escaping means a key containing a reserved character is unaddressable.
+  Such keys are rejected at the boundaries (ADR-021): `load()` fails with
+  `ParseError`, `fromValue`/subtree `set` fail with `InvalidPath`.
 * Traversal logic in `ConfigModel` consumes `ConfigPath::segments()`, applying
   upsert on write and existence checks on read.
 
@@ -409,6 +427,9 @@ Design rules enforced by the boundary:
   carrier (e.g. a `__version` key) fails `save()` with `SerializationError`.
 * The model root is always an object: documents with a non-object root (e.g.
   a top-level JSON array) fail `load()` with `ParseError`.
+* Object keys containing reserved path characters (`.` `[` `]`) fail `load()`
+  with `ParseError` (ADR-021): v1 paths have no escaping, so such keys could
+  never be addressed, mutated, or repaired.
 * Backends live in `backends/<fmt>` as independent CMake targets. Errors map to
   `ParseError` / `SerializationError`.
 
@@ -574,8 +595,8 @@ untouched on error.
 
 ### 9.2 Construction via validating factory
 
-Because construction can fail (registry validation) and constructors cannot
-return `Result`, construction uses a static factory (ADR-011):
+Because construction can fail (registry validation, ADR-011) and constructors
+cannot return `Result`, construction uses a static factory:
 
 ```cpp
 class ConfigRuntime {
@@ -677,9 +698,34 @@ after any migration, before commit (ADR-010):
 // Returns whether any key was added (drives the commit decision).
 Result<bool> repair(ConfigModel& model, VersionId targetVersion) {
     ConfigModel defaults = catalog_.createDefault(targetVersion)?;   // factory
-    return fillMissing(model.root(), defaults.root());   // recursive merge of absent paths
+    return fillMissing(model, defaults, defaults.root(), /*path=*/"");
 }
+
+// Reads the defaults tree through const ConfigNode handles (§4.3) and writes
+// through ConfigModel's path API, keeping ConfigNode read-only: all mutation
+// goes through the model (§4.4). `path` names defaultsNode's location, which
+// is the same in both trees.
+Result<bool> fillMissing(ConfigModel& model, const ConfigModel& defaults,
+                         ConfigNode defaultsNode, const std::string& path);
 ```
+
+```text
+added = false
+for key in defaultsNode.keys():
+    childPath = path.empty() ? key : path + "." + key
+    if !model.contains(childPath):
+        model.set(childPath, defaults.getValue(childPath)?)  // copy default subtree
+        added = true
+    else if defaultsNode.child(key) and model.nodeAt(childPath) both hold Object:
+        added |= fillMissing(model, defaults, defaultsNode.child(key)?, childPath)?
+    // else: present in the model -> leave untouched (presence wins)
+return added
+```
+
+Because writes go through the path API and v1 paths have no escaping (§4.5),
+object keys containing reserved characters would be unaddressable during
+repair. ADR-021 makes this case unreachable: a default factory producing such
+a key already fails at `fromValue` inside `createDefault`.
 
 `fillMissing` rules:
 
@@ -718,6 +764,9 @@ A single, predictable mapping keeps diagnostics consistent across layers:
 | User callback threw (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |
 | Model contains the format's reserved version carrier in `save()` | `SerializationError` |
 | Non-object document root in `load()` | `ParseError` |
+| Non-object root passed to `ConfigModel::fromValue` | `InvalidType` |
+| Object key contains a reserved path character in `load()` | `ParseError` |
+| Object key contains a reserved path character in `fromValue` / subtree `set` | `InvalidPath` |
 
 `synchronize()` reports failures directly through `Result`'s error channel —
 there is no failure status — and guarantees the caller's configuration is
@@ -784,7 +833,10 @@ Unit tests target the model and orchestration logic without format backends:
 * **ConfigPath**: grammar acceptance/rejection, nested arrays, reserved chars.
 * **ConfigModel**: upsert creation, typed get/set, `InvalidType`/`NodeNotFound`,
   `remove` semantics, strict scalar conversion rules (lossless-only
-  Int↔Double, no Bool/String coercion, no stringification).
+  Int↔Double, no Bool/String coercion, no stringification); member order
+  preserved across `getValue`/`set` round-trips (ADR-022); `fromValue`
+  rejects non-object roots (`InvalidType`) and reserved-character keys
+  (`InvalidPath`, ADR-021).
 * **Node lifetime**: handle stays valid across reparent/move; becomes invalid
   after `remove` (generation check); handles remain valid across a move of the
   `ConfigModel` object itself (heap arena transfer).
@@ -808,7 +860,9 @@ Unit tests target the model and orchestration logic without format backends:
 
 A small backend round-trip suite (`load`→`save`→`load`) is added per format once
 core is stable, including the mandatory-version failure path (`load()` on
-unversioned data → `InvalidVersion`). The test framework is **GoogleTest**
+unversioned data → `InvalidVersion`), reserved-character key rejection
+(`ParseError`, ADR-021), and member-order preservation across a
+`load`→`save` round trip (ADR-022). The test framework is **GoogleTest**
 (pinned in §11.1), fetched via the same `FetchContent` pattern so the test
 build is self-contained.
 

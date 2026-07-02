@@ -261,6 +261,11 @@ producing ambiguous output.
 The model root is always an Object. Documents with a non-object root,
 such as a top-level JSON array, fail to load with `ParseError`.
 
+Object keys containing reserved path characters (`.` `[` `]`) also fail
+to load with `ParseError`. Version 1 paths have no escaping, so such
+keys could never be addressed, mutated, or repaired; the library rejects
+them rather than admitting unaddressable data (ADR-021).
+
 Implementations:
 
 ```text
@@ -381,8 +386,15 @@ ConfigRuntime
     |
     +-- VersionCatalog
     +-- MigrationRegistry
-    +-- MigrationEngine
+    |
+    +-> MigrationEngine   (constructed per synchronize() call, never stored)
 ```
+
+`ConfigRuntime` does not store a `MigrationEngine` member. The engine
+holds references to the catalog and registry, so a stored engine would
+dangle once the runtime object is moved. The engine is stateless and
+cheap: `synchronize()` constructs one over the owned catalog and
+registry on each call.
 
 Responsibilities:
 
@@ -859,6 +871,11 @@ Reserved characters:
 
 Version 1 does not support escaping.
 
+Because there is no escaping, an object key containing a reserved
+character can never be addressed through a path. Such keys are rejected
+at the library's boundaries rather than admitted as unaddressable data
+(ADR-021).
+
 The empty string is not a valid path and fails with `InvalidPath`. No
 string path addresses the root node; the root is reached through the
 model's root handle.
@@ -1119,8 +1136,15 @@ The non-throwing public API is enforced at two concrete boundaries.
 Exceptions other than `std::bad_alloc` thrown by user-supplied
 callbacks — migration functions and default factories — never escape
 the library. They are caught at the invocation site and mapped to
-`MigrationFailed`, with the exception message preserved in
-`Error::message`.
+`MigrationFailed`. The catch order at the boundary is fixed:
+
+1. `std::bad_alloc` is caught first and rethrown, so the catch-all
+   below can never swallow it.
+2. Exceptions derived from `std::exception` preserve `what()` in
+   `Error::message`.
+3. Any other thrown type is caught by a catch-all and mapped with the
+   fixed message "unknown exception from user callback" — there is no
+   `what()` to preserve.
 
 `std::bad_alloc` is exempt from this rule: it is not a recoverable
 configuration error, and memory exhaustion may propagate from anywhere,
@@ -1154,3 +1178,30 @@ model — and rejects non-object document roots with `ParseError`. save()
 writes the carrier from `VersionedConfig::version` and fails with
 `SerializationError` if the model itself already contains the reserved
 carrier, rather than silently producing ambiguous output.
+
+---
+
+## ADR-021
+
+Object keys must be path-addressable: reserved characters are rejected
+at the boundaries.
+
+ConfigPath has no escaping in version 1, so an object key containing
+`.` `[` or `]` could never be addressed, mutated, or repaired through
+the path API. Rather than admit silently unaddressable data, the
+boundaries reject such keys: load() fails with `ParseError`, and
+fromValue() / subtree insertion fail with `InvalidPath`. Path escaping
+in a later version may lift this restriction.
+
+---
+
+## ADR-022
+
+Object member order is insertion order, preserved end-to-end.
+
+Both tree representations — the value-semantic ConfigValue and the
+model's node storage — keep object members in insertion order. A
+document keeps its author's key order through load, mutation, and save,
+and a subtree extracted and re-inserted preserves its member order. One
+ordering rule everywhere keeps serialization and repair deterministic,
+which matters for diffing and reproducible migrations.
