@@ -104,6 +104,10 @@ using Result = tl::expected<T, Error>;
 * `Result<void>` is used for operations that either succeed or fail.
 * A single migration path is provided to swap `tl::expected` for `std::expected`
   later: only `result.hpp` references the underlying type.
+* Non-throwing boundary (ADR-018): exceptions from user-supplied callbacks
+  (`MigrationFn`, `DefaultFactory`) are caught at the invocation site and
+  mapped to `MigrationFailed`, preserving `what()` in `Error::message`.
+  `std::bad_alloc` is not a recoverable configuration error and may propagate.
 
 ### 3.2 Versioning (`version.hpp`)
 
@@ -124,7 +128,8 @@ struct VersionArtifact {
 `DefaultFactory` returns a `ConfigValue` (the value-semantic tree, §4.1);
 `VersionCatalog::createDefault` adopts it into a `ConfigModel` via
 `ConfigModel::fromValue`, so there is exactly one conversion path between the
-two tree representations.
+two tree representations. The returned tree must be object-rooted (§4.1); a
+factory that throws is caught and mapped to `MigrationFailed` (ADR-018).
 
 ---
 
@@ -136,6 +141,10 @@ This is the heart of the library. The model is a JSON-like document tree
 1. `ConfigModel` *owns all storage*.
 2. `ConfigNode` is a *lightweight handle* that survives moves but is invalidated
    by removal.
+
+The root of a model is always an `Object` (ADR-020): `ConfigModel()` starts as
+an empty root object, `fromValue` rejects non-object roots with `InvalidType`,
+and backends reject non-object document roots with `ParseError`.
 
 ### 4.1 Value taxonomy (`config_value.hpp`)
 
@@ -221,6 +230,14 @@ class NodeArena {
   `NodeId` → existing handles stay valid.
 * *Removing a node* frees the slot and bumps `generation` → any handle holding
   the old generation is detectably stale (invalidated).
+* The arena lives on the heap (`std::unique_ptr<NodeArena>` member of
+  `ConfigModel`), so *moving the `ConfigModel` object* transfers the arena and
+  keeps every handle valid — handles follow the new owner.
+* *Destroying* a model — including move-assigning another model onto it —
+  destroys the arena and invalidates every handle into it **undetectably**
+  (the same contract as container iterators). Because a committing
+  `synchronize()` move-assigns the working copy onto the caller's config, it
+  invalidates all handles previously obtained from that configuration.
 
 ### 4.3 ConfigNode handle (`config_node.hpp`)
 
@@ -237,14 +254,18 @@ public:
     Result<std::vector<std::string>> keys() const;             // object: member names, in order
 
 private:
-    ConfigModel*  model_   = nullptr;
-    NodeId        id_       = NodeId_None::value;
-    std::uint32_t generation_ = 0;     // must match arena slot to be valid
+    const ConfigModel* model_    = nullptr;
+    NodeId             id_       = NodeId_None::value;
+    std::uint32_t      generation_ = 0;   // must match arena slot to be valid
 };
 ```
 
 A `ConfigNode` is a 16-byte handle. Validity is verified lazily by comparing
 `generation_` with the arena slot's current generation.
+
+`ConfigNode` is a **read-only** handle: every accessor is `const` and it
+stores a `const ConfigModel*`, so const models can be traversed — repair reads
+the defaults model exactly this way. All mutation goes through `ConfigModel`.
 
 ### 4.4 ConfigModel public API (`config_model.hpp`)
 
@@ -259,7 +280,7 @@ public:
     ConfigModel(ConfigModel&&) noexcept;
     ConfigModel& operator=(ConfigModel&&) noexcept;
 
-    ConfigNode root();
+    ConfigNode root() const;
 
     // ---- Path-based access (primary API) ----
     template <typename T>
@@ -272,7 +293,7 @@ public:
 
     bool         contains(std::string_view path) const;
     Result<void> remove(std::string_view path);           // invalidates handles
-    Result<ConfigNode> nodeAt(std::string_view path);
+    Result<ConfigNode> nodeAt(std::string_view path) const;
 
     // ---- Subtree insertion (for defaults & migrations) ----
     Result<void> set(std::string_view path, ConfigValue subtree);
@@ -287,13 +308,24 @@ Key behaviors:
 * `set` uses **upsert semantics** (Architecture §Path Semantics): missing
   intermediate objects/arrays are created. `set("network.timeout", 10)` creates
   `network` first.
+* Upsert creates structure but **never changes type** (ADR-019): a path
+  segment conflicting with an existing node's type (e.g. `network` exists as
+  a string) fails with `InvalidType` and modifies nothing. Migrations that
+  change a node's type remove it explicitly first.
+* Array indices are bounded: a write may target an existing element or one
+  past the end (append). Larger indices fail with `NodeNotFound`; missing
+  intermediate arrays are created empty. Holes are never fabricated.
+* `contains()` never fails: it returns `false` for malformed paths as well as
+  absent ones.
 * `get<T>` returns `InvalidType` if the stored scalar cannot yield `T`,
   `NodeNotFound` if the path is absent, `InvalidPath` if the path is malformed.
 * Scalar conversions are **strict and lossless-only**: `Int` → `Double` only
   when the value is exactly representable as a double; `Double` → `Int` only
   when the value is integral and within range of the integer type; `Bool` and
   `String` never convert; every other combination is `InvalidType`. Values are
-  never stringified and strings are never parsed into numbers.
+  never stringified and strings are never parsed into numbers. `Int` is stored
+  as `std::int64_t`; reads into narrower or differently signed integer types
+  succeed only when the value is exactly representable in the requested type.
 * There is **no dedicated rename/move API**. A rename composes from the common
   flow shared by all operations: `getValue(from)` → `set(to, value)` →
   `remove(from)`.
@@ -320,6 +352,8 @@ public:
 
 * Supports `object.key`, `arr[0]`, and nesting (`groups[0].users[4].name`).
 * Reserved characters: `.` `[` `]`. **No escaping in v1** (explicit non-goal).
+* The empty string is invalid (`InvalidPath`). No string path addresses the
+  root node; the root is reached via `ConfigModel::root()`.
 * Traversal logic in `ConfigModel` consumes `ConfigPath::segments()`, applying
   upsert on write and existence checks on read.
 
@@ -362,6 +396,12 @@ Design rules enforced by the boundary:
   version for unversioned data — ADR-014.
 * Each backend defines how the version is embedded/extracted in its own format;
   the library imposes **no common envelope** across formats.
+* The version carrier is **reserved** (ADR-020): `load()` consumes it — it
+  never appears in the resulting model — and `save()` writes it from
+  `VersionedConfig::version`. A model that already contains the reserved
+  carrier (e.g. a `__version` key) fails `save()` with `SerializationError`.
+* The model root is always an object: documents with a non-object root (e.g.
+  a top-level JSON array) fail `load()` with `ParseError`.
 * Backends live in `backends/<fmt>` as independent CMake targets. Errors map to
   `ParseError` / `SerializationError`.
 
@@ -398,6 +438,11 @@ The catalog is also the single source of **version ordering and adjacency**:
 `nextVersion()` returns the next *registered* version in catalog order, and is
 what registry validation and the migration engine consult. Version ids need not
 be consecutive integers — a catalog of v1, v2, v4 makes v2 and v4 adjacent.
+
+`latestVersion()` requires a non-empty catalog. The library only calls it
+through `ConfigRuntime`, whose `create()` rejects an empty catalog with
+`InvalidVersion` (§9.2). A `DefaultFactory` that throws inside
+`createDefault()` is caught and mapped to `MigrationFailed` (ADR-018).
 
 ---
 
@@ -472,8 +517,12 @@ while current < target:
     config.version = current                               // version advances per step
 ```
 
-* Forward-only; if `config.version > target` the engine reports
-  `MigrationFailed` (downgrade is handled at the runtime layer, not here).
+* `target` must be a registered version; otherwise `InvalidVersion`.
+* `config.version == target` is a successful no-op.
+* Forward-only; if `config.version > target` the engine fails with
+  `InvalidVersion` (downgrade is handled at the runtime layer, not here).
+* A migration function that throws is caught and mapped to `MigrationFailed`
+  (ADR-018).
 * `migrate()` is also the **direct migration** entry point (Architecture
   §Direct Migration Workflow, ADR-016) for apps that decide for themselves
   when migration should happen and bypass `ConfigRuntime`.
@@ -527,14 +576,20 @@ public:
 private:
     VersionCatalog    catalog_;
     MigrationRegistry registry_;
-    MigrationEngine   engine_;     // constructed over catalog_ + registry_
+    // No MigrationEngine member: the engine holds references to catalog and
+    // registry, so a stored engine would dangle once create() moves the
+    // runtime out (returned by value). The engine is stateless and cheap;
+    // synchronize() constructs one over catalog_/registry_ per call.
 };
 ```
 
 `create()`:
 
-1. `registry.validate(catalog)` → on failure, return the error (no runtime built).
-2. Move catalog/registry into the runtime, construct the engine, return it.
+1. Empty catalog (no registered versions) → `Error{InvalidVersion}`: there is
+   no latest version to synchronize toward.
+2. `registry.validate(catalog)` → on failure, return the error (no runtime built).
+3. Move catalog/registry into the runtime and return it. `ConfigRuntime`
+   remains freely movable because no member holds references into the object.
 
 ### 9.3 inspect()
 
@@ -559,11 +614,16 @@ state = inspect(cfg, supported)
 
 DowngradeRequired -> return SyncStatus::DowngradeRequired   (no modification)
 
+UpgradeRequired && !catalog_.contains(cfg.version)
+                  -> Error{InvalidVersion}    // unknown persisted version:
+                                              // fail before any work, not mid-chain
+
 InSync / UpgradeRequired:
     working = VersionedConfig{ cfg.version, cfg.model.clone() }      // 1. copy
     migrated = false
     if state == UpgradeRequired:
-        engine_.migrate(working, supported)   -> on err return Error // 2. migrate
+        MigrationEngine{catalog_, registry_}
+            .migrate(working, supported)      -> on err return Error // 2. migrate
         migrated = true
     repaired = repair(working.model, supported) -> on err return Error // 3. repair
     if migrated or repaired:
@@ -575,6 +635,10 @@ An `InSync` configuration still passes through repair: being at the right
 version does not guarantee no keys have drifted away. When neither migration
 nor repair changed anything, the commit is skipped and `cfg` is never touched.
 
+A version *newer* than `supported` is reported as `DowngradeRequired` with no
+registration check — configurations written by newer applications are expected
+to carry versions this catalog does not know.
+
 Guarantees realized:
 
 * All work happens on `working` (a `clone()`); `cfg` is untouched until commit.
@@ -582,6 +646,8 @@ Guarantees realized:
   and the commit happens only when something actually changed.
 * On failure the `Error` propagates through `Result` and `cfg` is guaranteed
   unmodified.
+* The commit move-assigns `working` onto `cfg`, which invalidates every
+  `ConfigNode` handle previously obtained from `cfg` (§4.2).
 * The library never writes to storage — saving stays with the application.
 
 ### 9.5 Repair (private)
@@ -606,6 +672,10 @@ Result<bool> repair(ConfigModel& model, VersionId targetVersion) {
   coercion, no removal of unknown keys, no schema checks).
 * **Arrays are atomic**: a default array is copied only when its key is entirely
   absent; existing arrays are never merged element-wise, extended, or truncated.
+* Recursion descends only where **both** the model and the defaults hold an
+  `Object` at the same key. A key present in the model with a different type
+  than the default is left untouched and its default children are not
+  backfilled — presence wins over shape.
 
 ---
 
@@ -625,6 +695,12 @@ A single, predictable mapping keeps diagnostics consistent across layers:
 | Unknown/duplicate version, bad endpoint | `InvalidVersion` |
 | `supported` version not registered in the catalog | `InvalidVersion` |
 | Stream carries no version metadata in `load()` | `InvalidVersion` |
+| Empty catalog at `ConfigRuntime::create()` | `InvalidVersion` |
+| Persisted `config.version` unregistered when an upgrade is required | `InvalidVersion` |
+| Engine `target` unregistered or below the current version | `InvalidVersion` |
+| User callback threw (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |
+| Model contains the format's reserved version carrier in `save()` | `SerializationError` |
+| Non-object document root in `load()` | `ParseError` |
 
 `synchronize()` reports failures directly through `Result`'s error channel —
 there is no failure status — and guarantees the caller's configuration is
@@ -649,7 +725,7 @@ if (NOT tl-expected_FOUND)
   include(FetchContent)
   FetchContent_Declare(tl-expected
     GIT_REPOSITORY https://github.com/TartanLlama/expected.git
-    GIT_TAG        <pinned-tag>)
+    GIT_TAG        v1.1.0)
   FetchContent_MakeAvailable(tl-expected)
 endif()
 ```
@@ -660,6 +736,8 @@ endif()
   required from the consumer's package manager.
 * An option `CONFIGMANAGER_USE_SYSTEM_DEPS=ON` forces `find_package`-only for
   distro packagers who want no network fetch.
+* Pinned dependency tags: `tl-expected v1.1.0`, `nlohmann/json v3.11.3`,
+  `yaml-cpp 0.8.0`, `pugixml v1.14`, `googletest v1.14.0`.
 
 ### 11.2 Targets and installation
 
@@ -691,21 +769,31 @@ Unit tests target the model and orchestration logic without format backends:
   `remove` semantics, strict scalar conversion rules (lossless-only
   Int↔Double, no Bool/String coercion, no stringification).
 * **Node lifetime**: handle stays valid across reparent/move; becomes invalid
-  after `remove` (generation check).
+  after `remove` (generation check); handles remain valid across a move of the
+  `ConfigModel` object itself (heap arena transfer).
+* **Upsert edge cases**: type-conflict writes fail `InvalidType` and leave the
+  model unchanged; array writes may append at one past the end while larger
+  indices fail `NodeNotFound`; empty path → `InvalidPath`; `contains()`
+  returns `false` on malformed paths.
 * **MigrationRegistry::validate**: missing edge, duplicate edge, edge skipping
   a registered version, unknown endpoint.
 * **MigrationEngine**: multi-step forward chain (including sparse version ids,
-  e.g. v2 → v4), version advances per step, `MissingMigration` surfaced.
+  e.g. v2 → v4), version advances per step, `MissingMigration` surfaced;
+  no-op when already at target; unregistered or backward target →
+  `InvalidVersion`; throwing migration function mapped to `MigrationFailed`.
 * **ConfigRuntime**: each `SyncStatus`; unregistered `supported` version →
   `InvalidVersion`; transactional rollback (original unchanged when a mid-chain
   migration fails); repair fills missing only and never overwrites; repair runs
   on `InSync` (drift) with commit skipped when nothing changed; array atomicity
-  in `fillMissing`.
+  and type-mismatch (presence-wins) rules in `fillMissing`; empty catalog
+  rejected by `create()`; unregistered persisted version on upgrade →
+  `InvalidVersion`; newer-unregistered version → `DowngradeRequired`.
 
 A small backend round-trip suite (`load`→`save`→`load`) is added per format once
 core is stable, including the mandatory-version failure path (`load()` on
-unversioned data → `InvalidVersion`). Test framework is fetched via the same `FetchContent` pattern so
-the test build is self-contained.
+unversioned data → `InvalidVersion`). The test framework is **GoogleTest**
+(pinned in §11.1), fetched via the same `FetchContent` pattern so the test
+build is self-contained.
 
 ---
 
