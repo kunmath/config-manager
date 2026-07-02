@@ -104,10 +104,11 @@ using Result = tl::expected<T, Error>;
 * `Result<void>` is used for operations that either succeed or fail.
 * A single migration path is provided to swap `tl::expected` for `std::expected`
   later: only `result.hpp` references the underlying type.
-* Non-throwing boundary (ADR-018): exceptions from user-supplied callbacks
-  (`MigrationFn`, `DefaultFactory`) are caught at the invocation site and
-  mapped to `MigrationFailed`, preserving `what()` in `Error::message`.
-  `std::bad_alloc` is not a recoverable configuration error and may propagate.
+* Non-throwing boundary (ADR-018): exceptions other than `std::bad_alloc`
+  from user-supplied callbacks (`MigrationFn`, `DefaultFactory`) are caught at
+  the invocation site and mapped to `MigrationFailed`, preserving `what()` in
+  `Error::message`. `std::bad_alloc` is not a recoverable configuration error
+  and may propagate from anywhere, including callbacks.
 
 ### 3.2 Versioning (`version.hpp`)
 
@@ -231,8 +232,9 @@ class NodeArena {
 * *Removing a node* frees the slot and bumps `generation` → any handle holding
   the old generation is detectably stale (invalidated).
 * The arena lives on the heap (`std::unique_ptr<NodeArena>` member of
-  `ConfigModel`), so *moving the `ConfigModel` object* transfers the arena and
-  keeps every handle valid — handles follow the new owner.
+  `ConfigModel`), and handles point at the **arena**, never at the
+  `ConfigModel` object (§4.3). *Moving the `ConfigModel` object* transfers the
+  arena pointer and keeps every handle valid — handles follow the new owner.
 * *Destroying* a model — including move-assigning another model onto it —
   destroys the arena and invalidates every handle into it **undetectably**
   (the same contract as container iterators). Because a committing
@@ -254,7 +256,7 @@ public:
     Result<std::vector<std::string>> keys() const;             // object: member names, in order
 
 private:
-    const ConfigModel* model_    = nullptr;
+    const NodeArena*   arena_    = nullptr;   // stable across ConfigModel moves
     NodeId             id_       = NodeId_None::value;
     std::uint32_t      generation_ = 0;   // must match arena slot to be valid
 };
@@ -263,9 +265,14 @@ private:
 A `ConfigNode` is a 16-byte handle. Validity is verified lazily by comparing
 `generation_` with the arena slot's current generation.
 
-`ConfigNode` is a **read-only** handle: every accessor is `const` and it
-stores a `const ConfigModel*`, so const models can be traversed — repair reads
-the defaults model exactly this way. All mutation goes through `ConfigModel`.
+`ConfigNode` is a **read-only** handle: every accessor is `const`, so const
+models can be traversed — repair reads the defaults model exactly this way.
+All mutation goes through `ConfigModel`.
+
+The handle references the **arena**, not the `ConfigModel` object. This is
+what makes the move-stability contract implementable: the arena's heap address
+is stable when the owning model is moved, while the model object's own address
+is not. A handle holding a `ConfigModel*` would dangle on every move.
 
 ### 4.4 ConfigModel public API (`config_model.hpp`)
 
@@ -276,7 +283,7 @@ ergonomic surface; node handles are the lower-level surface.
 class ConfigModel {
 public:
     ConfigModel();                       // empty root object
-    static ConfigModel fromValue(ConfigValue root);  // adopt a value tree into the arena
+    static Result<ConfigModel> fromValue(ConfigValue root);  // non-object root => InvalidType
     ConfigModel(ConfigModel&&) noexcept;
     ConfigModel& operator=(ConfigModel&&) noexcept;
 
@@ -422,7 +429,7 @@ public:
     Result<void> registerVersion(VersionArtifact artifact);  // dup => InvalidVersion
 
     bool                contains(VersionId v) const noexcept;
-    VersionId           latestVersion() const;               // max registered
+    Result<VersionId>   latestVersion() const;               // empty catalog => InvalidVersion
     Result<VersionId>   nextVersion(VersionId v) const;      // next registered version
     Result<ConfigModel> createDefault(VersionId v) const;    // factory ConfigValue -> fromValue
 
@@ -439,10 +446,13 @@ The catalog is also the single source of **version ordering and adjacency**:
 what registry validation and the migration engine consult. Version ids need not
 be consecutive integers — a catalog of v1, v2, v4 makes v2 and v4 adjacent.
 
-`latestVersion()` requires a non-empty catalog. The library only calls it
-through `ConfigRuntime`, whose `create()` rejects an empty catalog with
-`InvalidVersion` (§9.2). A `DefaultFactory` that throws inside
-`createDefault()` is caught and mapped to `MigrationFailed` (ADR-018).
+`latestVersion()` returns `InvalidVersion` on an empty catalog, keeping the
+"recoverable failures use Result" rule intact for applications that call the
+catalog directly (`nextVersion()` beside it already returns `Result`). Inside
+the library that error path is unreachable: `ConfigRuntime::create()` rejects
+an empty catalog (§9.2), so the runtime's own calls unwrap safely. A
+`DefaultFactory` that throws inside `createDefault()` is caught and mapped to
+`MigrationFailed` (ADR-018).
 
 ---
 
@@ -459,6 +469,10 @@ public:
     ConfigModel& model() noexcept;              // the configuration being migrated
     VersionId    fromVersion() const noexcept;  // version this step migrates from
     VersionId    toVersion() const noexcept;    // version this step migrates to
+
+private:
+    friend class MigrationEngine;               // only the engine builds contexts
+    MigrationContext(ConfigModel& model, VersionId from, VersionId to) noexcept;
 };
 
 using MigrationFn = std::function<Result<void>(MigrationContext&)>;  // transforms in place
@@ -511,7 +525,7 @@ current = config.version
 while current < target:
     next = catalog.nextVersion(current)                    // InvalidVersion if unknown
     edge = registry.findMigration(current, next)           // MissingMigration if absent
-    ctx  = MigrationContext{ config.model, current, next } // built per step
+    ctx  = MigrationContext(config.model, current, next)   // built per step (engine is a friend)
     edge->apply(ctx)                                       // MigrationFailed on error
     current = next
     config.version = current                               // version advances per step
@@ -526,10 +540,13 @@ while current < target:
 * `migrate()` is also the **direct migration** entry point (Architecture
   §Direct Migration Workflow, ADR-016) for apps that decide for themselves
   when migration should happen and bypass `ConfigRuntime`.
-* Direct semantics are **raw**: in-place mutation, no transactionality (a
-  mid-chain failure leaves the config at the last reached version — callers
-  wanting rollback `clone()` first), no repair, and no forced registry
-  validation (`registry.validate(catalog)` is the caller's job).
+* Direct semantics are **raw**: in-place mutation, no transactionality, no
+  repair, and no forced registry validation (`registry.validate(catalog)` is
+  the caller's job). After a mid-chain failure the version reflects the last
+  successfully completed step, but the model may additionally contain partial
+  mutations from the failed step — migration functions mutate in place before
+  returning an error. Treat the configuration as suspect after any failure;
+  callers wanting rollback `clone()` first.
 
 ---
 
@@ -695,7 +712,7 @@ A single, predictable mapping keeps diagnostics consistent across layers:
 | Unknown/duplicate version, bad endpoint | `InvalidVersion` |
 | `supported` version not registered in the catalog | `InvalidVersion` |
 | Stream carries no version metadata in `load()` | `InvalidVersion` |
-| Empty catalog at `ConfigRuntime::create()` | `InvalidVersion` |
+| Empty catalog (`ConfigRuntime::create()`, `latestVersion()`) | `InvalidVersion` |
 | Persisted `config.version` unregistered when an upgrade is required | `InvalidVersion` |
 | Engine `target` unregistered or below the current version | `InvalidVersion` |
 | User callback threw (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |

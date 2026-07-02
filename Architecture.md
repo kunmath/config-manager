@@ -110,11 +110,12 @@ Result<T>
 
 Two boundary rules make this guarantee concrete:
 
-* Exceptions thrown by user-supplied callbacks (migration functions,
-  default factories) never escape the library. They are caught at the
-  invocation site and converted to a `Result` error.
+* Exceptions other than `std::bad_alloc` thrown by user-supplied
+  callbacks (migration functions, default factories) never escape the
+  library. They are caught at the invocation site and converted to a
+  `Result` error.
 * `std::bad_alloc` is not a recoverable configuration error. Memory
-  exhaustion may propagate.
+  exhaustion may propagate from anywhere, including callbacks.
 
 ---
 
@@ -699,9 +700,12 @@ This allows applications to:
 Direct migration has raw semantics. Unlike synchronize(), it:
 
 * Mutates the configuration in place and is not transactional. The
-  version advances per step, so a mid-chain failure leaves the
-  configuration at the last successfully reached version. Callers
-  needing rollback should clone the model first.
+  version advances per step, so after a mid-chain failure the version
+  reflects the last successfully completed step — but the model may
+  additionally contain partial mutations from the failed step, since a
+  migration function can modify the model before returning an error.
+  Treat the configuration as suspect after any failure; callers needing
+  rollback should clone the model first.
 * Performs no repair. Missing-key backfill is the caller's
   responsibility.
 * Does not force registry validation. Callers should invoke
@@ -911,9 +915,10 @@ Moving nodes within the model does not invalidate handles.
 Removing nodes invalidates handles referencing those nodes; such
 handles detectably report themselves invalid.
 
-Node storage lives on the heap, owned by the model, so moving the
-ConfigModel object itself also keeps handles valid: they follow the new
-owner. Destroying a model — including move-assigning another model onto
+Node storage lives on the heap, owned by the model, and handles
+reference that storage directly rather than the ConfigModel object.
+Moving the ConfigModel object itself therefore keeps handles valid:
+they follow the new owner. Destroying a model — including move-assigning another model onto
 it — destroys the storage and invalidates every handle into it. This is
 not detectable through the handle; using one afterwards is undefined
 behavior, as with invalidated container iterators. In particular, a
@@ -1111,13 +1116,15 @@ every registered migration in every consuming application.
 
 The non-throwing public API is enforced at two concrete boundaries.
 
-Exceptions thrown by user-supplied callbacks — migration functions and
-default factories — never escape the library. They are caught at the
-invocation site and mapped to `MigrationFailed`, with the exception
-message preserved in `Error::message`.
+Exceptions other than `std::bad_alloc` thrown by user-supplied
+callbacks — migration functions and default factories — never escape
+the library. They are caught at the invocation site and mapped to
+`MigrationFailed`, with the exception message preserved in
+`Error::message`.
 
-`std::bad_alloc` is not a recoverable configuration error. Memory
-exhaustion may propagate; the Result channel is reserved for failures an
+`std::bad_alloc` is exempt from this rule: it is not a recoverable
+configuration error, and memory exhaustion may propagate from anywhere,
+including callbacks. The Result channel is reserved for failures an
 application can meaningfully handle.
 
 ---
