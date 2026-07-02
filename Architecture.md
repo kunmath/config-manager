@@ -228,6 +228,11 @@ Non-responsibilities:
 migrates the configuration. Repair and migration belong exclusively to
 `ConfigRuntime`.
 
+The configuration version is mandatory. If a stream contains no version
+metadata, `load()` fails with `InvalidVersion`; the library never
+guesses or assumes a version for unversioned data, because such data
+cannot be handled reliably.
+
 Each ConfigInterface implementation is responsible for serializing,
 deserializing, and reading/writing the configuration version according
 to its storage format.
@@ -256,6 +261,7 @@ Responsibilities:
 * Provide default configuration factories
 * Provide the latest known version
 * Provide version metadata
+* Define version ordering and adjacency (the next registered version)
 
 Example:
 
@@ -319,7 +325,8 @@ Performs configuration transformations between versions.
 
 Responsibilities:
 
-* Resolve migration paths via MigrationRegistry
+* Determine the next version from VersionCatalog order
+* Resolve migrations via MigrationRegistry
 * Execute migrations
 * Update configuration versions
 
@@ -403,13 +410,20 @@ struct VersionArtifact
 };
 ```
 
-Migration relationships form a directed graph.
+Migration relationships form a linear chain over the registered
+versions, ordered ascending.
 
 ```text
 v1 -> v2 -> v3 -> v4
 ```
 
-Only adjacent version migrations are supported.
+Adjacency is defined by catalog order: two versions are adjacent when
+no other registered version lies between them. Version numbers do not
+need to be consecutive integers; if the catalog registers v1, v2 and
+v4, then v2 and v4 are adjacent and the required migration is
+v2 -> v4.
+
+Only migrations between adjacent registered versions are supported.
 
 ```text
 v1 -> v2
@@ -417,7 +431,8 @@ v2 -> v3
 v3 -> v4
 ```
 
-Direct migrations (v1 -> v4) are intentionally unsupported.
+Migrations that skip a registered version (v1 -> v4 above) are
+intentionally unsupported.
 
 This keeps migrations small, deterministic, and easy to maintain.
 
@@ -430,10 +445,12 @@ against the versions declared in the VersionCatalog.
 
 Validation includes:
 
-* Every version has a migration to the next version, up to the latest.
+* Every registered version has a migration to the next registered
+  version (catalog order), up to the latest.
 * No duplicate migrations exist.
 * Migration versions reference versions known to the VersionCatalog.
-* Only adjacent migrations may be registered.
+* Only migrations between adjacent registered versions may be
+  registered.
 
 If validation fails, ConfigRuntime construction fails before any
 configuration can be synchronized.
@@ -476,16 +493,17 @@ enum class SyncStatus
 
     UpgradeRequired,
 
-    DowngradeRequired,
-
-    UnSynced
+    DowngradeRequired
 };
 ```
 
 * **InSync** – Configuration matches the application's supported version.
 * **UpgradeRequired** – Configuration is older and can be migrated.
 * **DowngradeRequired** – Configuration is newer than the application supports.
-* **UnSynced** – Synchronization could not complete due to migration or repair errors.
+
+There is no failure status. Failures during synchronization are
+reported through the `Result` error channel, and the caller's
+configuration is guaranteed unmodified on error.
 
 Because migrations are forward-only, a newer configuration cannot be
 downgraded. When the configuration version is newer than the
@@ -506,6 +524,17 @@ runtime.synchronize(
     supportedVersion);
 ```
 
+`supportedVersion` must be a version registered in the VersionCatalog.
+If it is not, synchronize() fails with `InvalidVersion` before any other
+work is performed.
+
+A convenience overload omits the parameter and targets the latest
+registered version:
+
+```cpp
+runtime.synchronize(config);
+```
+
 Synchronization is a single pipeline owned entirely by `ConfigRuntime`.
 There is exactly one place migration happens, exactly one place repair
 happens, and exactly one commit point.
@@ -513,29 +542,41 @@ happens, and exactly one commit point.
 ```text
                  synchronize()
                        |
+         Validate supportedVersion --> Error: InvalidVersion
+                       |
               Determine SyncStatus
                        |
-        InSync ----------------------> return
+        DowngradeRequired -----------> return (no modification)
                        |
-        DowngradeRequired -----------> return
-                       |
-        UpgradeRequired
+        InSync / UpgradeRequired
                        |
               Copy configuration
                        |
-          Apply incremental migrations
+          Apply incremental migrations   (skipped when InSync)
                        |
             Repair missing fields
                        |
             Success? ------------------ No
                  |                       |
                  | Yes                   v
-                 v               MigrationFailed
+                 v                Error returned,
+        Anything changed?        original untouched
+                 |
+                 +------ No ---------> return InSync (no commit)
+                 |
+                 | Yes
+                 v
           Replace original
                  |
                  v
                InSync
 ```
+
+An `InSync` configuration still passes through the repair step. A
+configuration can be at the correct version and still have missing keys
+(drift); synchronization is the single place such drift is repaired.
+When neither migration nor repair changed anything, the commit is
+skipped and the original configuration is left untouched.
 
 Synchronization is always explicit.
 
@@ -549,6 +590,10 @@ Synchronization is transactional with respect to the in-memory VersionedConfig.
 * The original VersionedConfig remains unchanged until all migration
   and repair steps complete successfully.
 * The caller's configuration is only updated after successful completion.
+* On failure, the error is returned through `Result` and the caller's
+  configuration is guaranteed unmodified.
+* The commit occurs only when migration or repair actually changed
+  something; a clean `InSync` pass leaves the original object untouched.
 * The library never writes to persistent storage. Saving the migrated
   configuration remains the responsibility of the application.
 
@@ -562,6 +607,10 @@ pipeline. It is never performed during `load()`.
 Repair runs once, after all migrations complete, using the target
 version's default configuration, and before the single commit point.
 
+Repair runs for both `InSync` and `UpgradeRequired` configurations. A
+configuration at the correct version can still have missing keys;
+synchronization is where that drift is repaired.
+
 Repair will:
 
 * Add missing keys using the target version's default values.
@@ -572,6 +621,10 @@ Repair will not:
 * Validate types
 * Remove unknown keys
 * Enforce schema constraints
+
+Arrays are atomic. A default array is copied only when its key is
+entirely absent from the configuration. Existing arrays are never
+merged element-wise, extended, or truncated.
 
 This allows ConfigManager to recover from common configuration drift
 without introducing a full schema validation framework, and keeps the
@@ -620,6 +673,22 @@ Return Value
 ```
 
 No migration checks occur.
+
+---
+
+# Scalar Type Conversion
+
+Typed reads are strict. A conversion is performed only when it is
+provably lossless:
+
+* `Bool` and `String` never convert to or from any other type.
+* `Int` converts to `Double` only when the value is exactly
+  representable as a double.
+* `Double` converts to `Int` only when the value is integral and within
+  the range of the integer type.
+
+All other combinations fail with `InvalidType`. Values are never
+stringified and strings are never parsed into numbers.
 
 ---
 
@@ -829,8 +898,12 @@ The current version is never supplied by callers.
 
 Migrations are adjacent-only and forward-only.
 
-Only migrations between adjacent versions are supported. Direct migrations
-between non-adjacent versions are intentionally unsupported, keeping migrations
+Adjacency is defined by catalog order: two versions are adjacent when no other
+registered version lies between them. Version numbers need not be consecutive
+integers.
+
+Only migrations between adjacent registered versions are supported. Migrations
+that skip a registered version are intentionally unsupported, keeping migrations
 small, deterministic, and easy to maintain.
 
 A configuration newer than the application's supported version cannot be
@@ -849,6 +922,10 @@ updated only after successful completion. There is exactly one place migration
 happens, one place repair happens, and one commit point, making runtime behavior
 deterministic.
 
+Failures propagate through the Result error channel; there is no failure
+status. The commit occurs only when migration or repair actually changed the
+configuration; otherwise the caller's object is left untouched.
+
 ---
 
 ## ADR-010
@@ -859,6 +936,10 @@ backfilling missing fields from the target version's default configuration.
 
 Repair never overwrites existing values, never removes unknown fields, never
 corrects types, and does not perform schema validation.
+
+Repair runs for both InSync and UpgradeRequired configurations, so
+version-correct drift is repaired too. Arrays are atomic: a default array is
+copied only when its key is entirely absent and is never merged element-wise.
 
 ---
 
@@ -886,3 +967,24 @@ component aligned with a single responsibility.
 
 load() only parses and deserializes. It never modifies, repairs, or migrates
 the configuration. This keeps configuration backends free of business logic.
+
+---
+
+## ADR-014
+
+The configuration version is mandatory in persisted data.
+
+load() fails with InvalidVersion when a stream carries no version metadata.
+Unversioned configurations cannot be handled reliably, so the library refuses
+to guess or assume a version for them.
+
+---
+
+## ADR-015
+
+Scalar type conversions are strict and lossless-only.
+
+Int converts to Double only when the value is exactly representable as a
+double. Double converts to Int only when the value is integral and within the
+range of the integer type. Bool and String never convert. All other
+combinations fail with InvalidType.
