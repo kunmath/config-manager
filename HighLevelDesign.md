@@ -111,7 +111,9 @@ using Result = tl::expected<T, Error>;
   type gets the fixed message "unknown exception from user callback". The
   boundary catches `std::bad_alloc` first and rethrows it: memory exhaustion
   is not a recoverable configuration error and may propagate from anywhere,
-  including callbacks.
+  including callbacks. The same catch discipline applies at the serialization
+  boundary (§6): exceptions from parser libraries or stream operations inside
+  `load()` map to `ParseError`, inside `save()` to `SerializationError`.
 
 ### 3.2 Versioning (`version.hpp`)
 
@@ -206,6 +208,14 @@ without moving the member. One ordering rule everywhere keeps serialization
 and repair **deterministic**, which matters for diffing and reproducible
 migrations.
 
+`set`/`push` are builder **preconditions**, not fallible operations: `set`
+requires an `Object`, `push` requires an `Array`. Violating a precondition is
+a programming error (debug assertion; otherwise undefined behavior), not a
+recoverable failure — `ConfigValue` is a builder driven by factory and
+migration code, never by external data. The builder does not validate keys
+either; key validity (non-empty, no reserved characters) is enforced where a
+value crosses into a model: `fromValue` and subtree `set` (ADR-021).
+
 ### 4.2 Internal storage: a generation-checked arena
 
 `ConfigModel` does **not** store `ConfigValue` directly. It stores a flat arena
@@ -238,7 +248,9 @@ class NodeArena {
 **Why this satisfies the lifetime contract:**
 
 * *Moving / reparenting a node* changes only `parent`/`members`, never its
-  `NodeId` → existing handles stay valid.
+  `NodeId` → existing handles stay valid. No v1 public operation reparents a
+  node; the invariant exists at the storage level and future-proofs
+  move/rename APIs (§4.4).
 * *Removing a node* frees the slot and bumps `generation` → any handle holding
   the old generation is detectably stale (invalidated).
 * The arena lives on the heap (`std::unique_ptr<NodeArena>` member of
@@ -274,6 +286,23 @@ private:
 
 A `ConfigNode` is a 16-byte handle. Validity is verified lazily by comparing
 `generation_` with the arena slot's current generation.
+
+Accessor contract:
+
+* `valid()` is safe to call while the owning model is alive — it dereferences
+  the arena, so it cannot outlive it. After the model is destroyed (including
+  by move-assignment onto it or a committing `synchronize()`), no `ConfigNode`
+  member is safe, `valid()` included: that lifetime boundary is undetectable
+  (§4.2) and use is undefined behavior, as with container iterators.
+* The `Result`-returning accessors are total: on a **stale** handle they fail
+  with `NodeNotFound` (the node is gone); on a type mismatch — `child()` on a
+  non-object, `at()` on a non-array, `keys()` on a non-object, `as<T>()` on a
+  non-scalar or unconvertible scalar — they fail with `InvalidType`. A
+  missing key or out-of-range index is `NodeNotFound`.
+* The two `noexcept` accessors are preconditioned on `valid()`: calling
+  `type()` or `size()` on an invalid handle is a programming error (debug
+  assertion; otherwise undefined behavior). `size()` returns the
+  member/element count for objects/arrays and `0` for scalars.
 
 `ConfigNode` is a **read-only** handle: every accessor is `const`, so const
 models can be traversed — repair reads the defaults model exactly this way.
@@ -329,9 +358,21 @@ Key behaviors:
   segment conflicting with an existing node's type (e.g. `network` exists as
   a string) fails with `InvalidType` and modifies nothing. Migrations that
   change a node's type remove it explicitly first.
+* The rule covers the **final** node too: a write to an existing node
+  succeeds only when the new value's type equals the node's current type.
+  Same-type writes update in place — the target keeps its `NodeId`, so
+  handles to it stay valid; a same-type subtree write replaces the node's
+  *contents*, removing all previous descendants and detectably invalidating
+  their handles. Any cross-type write (`set("a", 1)` while `a` is an object)
+  fails with `InvalidType`; remove first.
 * Array indices are bounded: a write may target an existing element or one
   past the end (append). Larger indices fail with `NodeNotFound`; missing
   intermediate arrays are created empty. Holes are never fabricated.
+* Writes are **atomic** (ADR-019): `set` validates the entire path against
+  the existing tree before any mutation, so a failed write — `InvalidPath`,
+  `InvalidType`, or `NodeNotFound` — leaves the model unmodified.
+  `set("users[2].name", v)` with `users` absent fails without leaving behind
+  an empty `users` array.
 * `contains()` never fails: it returns `false` for malformed paths as well as
   absent ones.
 * `get<T>` returns `InvalidType` if the stored scalar cannot yield `T`,
@@ -345,12 +386,16 @@ Key behaviors:
   succeed only when the value is exactly representable in the requested type.
 * There is **no dedicated rename/move API**. A rename composes from the common
   flow shared by all operations: `getValue(from)` → `set(to, value)` →
-  `remove(from)`.
+  `remove(from)`. The composition **copies**: handles into the removed source
+  subtree are invalidated (detectably) and do not carry over to the copy at
+  `to`. Arena-level move stability (§4.2) is not observable through this
+  composition.
 * The scalar `set<T>` template is constrained to exclude `ConfigValue`, so
   subtree insertion unambiguously selects the `ConfigValue` overload.
 * `fromValue` rejects a non-object root with `InvalidType` and any object key
-  containing a reserved path character with `InvalidPath` (ADR-021); the
-  subtree `set` overload applies the same key check to the inserted value.
+  that is not path-addressable — empty, or containing a reserved path
+  character — with `InvalidPath` (ADR-021); the subtree `set` overload
+  applies the same key check to the inserted value.
 * `clone()` provides the deep copy that `ConfigRuntime::synchronize` runs on.
 
 ### 4.5 ConfigPath (`config_path.hpp`)
@@ -372,13 +417,30 @@ public:
 };
 ```
 
+The complete grammar:
+
+```text
+path    := segment ( "." segment )*
+segment := key index*
+key     := char+            ; char = any byte except "." "[" "]"
+index   := "[" digit+ "]"   ; decimal digits only
+```
+
 * Supports `object.key`, `arr[0]`, and nesting (`groups[0].users[4].name`).
 * Reserved characters: `.` `[` `]`. **No escaping in v1** (explicit non-goal).
+* The grammar is total — anything it does not produce is `InvalidPath`:
+  empty keys (`""`, `a.`, `.a`, `a..b`), a leading index (`[0]` — the root
+  is an object), empty or non-decimal indices (`arr[]`, `arr[-1]`,
+  `arr[1x]`), and text directly after `]` other than `.`, `[`, or
+  end-of-path (`a[0]b`). Whitespace is never trimmed — it is an ordinary key
+  character. Indices are decimal, leading zeros permitted; a value that
+  overflows `std::size_t` is `InvalidPath`.
 * The empty string is invalid (`InvalidPath`). No string path addresses the
   root node; the root is reached via `ConfigModel::root()`.
-* No escaping means a key containing a reserved character is unaddressable.
-  Such keys are rejected at the boundaries (ADR-021): `load()` fails with
-  `ParseError`, `fromValue`/subtree `set` fail with `InvalidPath`.
+* A key that is empty or contains a reserved character is unaddressable: there
+  is no escaping, and the empty string is not a valid segment. Such keys are
+  rejected at the boundaries (ADR-021): `load()` fails with `ParseError`,
+  `fromValue`/subtree `set` fail with `InvalidPath`.
 * Traversal logic in `ConfigModel` consumes `ConfigPath::segments()`, applying
   upsert on write and existence checks on read.
 
@@ -427,18 +489,104 @@ Design rules enforced by the boundary:
   carrier (e.g. a `__version` key) fails `save()` with `SerializationError`.
 * The model root is always an object: documents with a non-object root (e.g.
   a top-level JSON array) fail `load()` with `ParseError`.
-* Object keys containing reserved path characters (`.` `[` `]`) fail `load()`
-  with `ParseError` (ADR-021): v1 paths have no escaping, so such keys could
-  never be addressed, mutated, or repaired.
+* Object keys that are not path-addressable — empty, or containing `.` `[`
+  `]` — fail `load()` with `ParseError` (ADR-021): v1 paths have no escaping
+  and the empty string is not a valid path, so such keys could never be
+  addressed, mutated, or repaired.
+* Backends are a non-throwing boundary (ADR-018): exceptions from parser
+  libraries or stream operations (including streams with exception masks set)
+  are caught inside the backend and mapped to `ParseError` in `load()` /
+  `SerializationError` in `save()`, with the standard catch order
+  (`std::bad_alloc` rethrown first, `std::exception` preserves `what()`,
+  catch-all gets a fixed fallback message).
 * Backends live in `backends/<fmt>` as independent CMake targets. Errors map to
   `ParseError` / `SerializationError`.
 
-| Target | Library (header-only?) | Version encoding example |
-|---|---|---|
-| `configmanager::json` | nlohmann/json (header-only) | top-level `"__version"` field |
-| `configmanager::yaml` | yaml-cpp | top-level `version:` key |
-| `configmanager::xml`  | pugixml (header+small src) | root attribute `version="N"` |
-| `configmanager::ini`  | none (hand-written) | `[meta] version=N` section |
+| Target | Library (header-only?) | Version encoding | Reserved model path (`save()` conflict) |
+|---|---|---|---|
+| `configmanager::json` | nlohmann/json, `ordered_json` (header-only) | top-level `"__version"` field | top-level `__version` key |
+| `configmanager::yaml` | yaml-cpp | top-level `version:` key | top-level `version` key |
+| `configmanager::xml`  | pugixml (header+small src) | root attribute `version="N"` | none — attributes are outside the model's key space |
+| `configmanager::ini`  | none (hand-written) | `[meta] version=N` section | `meta.version` |
+
+The reserved model path is the exact location whose presence in the model
+makes `save()` fail with `SerializationError` (ADR-020). The XML carrier is a
+root *attribute*, which no model path can express, so its conflict check is
+vacuous.
+
+ADR-022 (insertion order end-to-end) constrains parser choice: the JSON
+backend must use `nlohmann::ordered_json` — default `nlohmann::json` sorts
+object keys alphabetically and would silently reorder documents. yaml-cpp and
+pugixml already preserve document order; the hand-written INI backend does the
+same.
+
+### 6.1 Format mappings
+
+JSON and YAML express the model natively; XML and INI cannot, so their
+mappings are restricted. Two rules close every gap deterministically: a model
+unrepresentable in a format fails `save()` with `SerializationError`, and a
+document unrepresentable in the model fails `load()` with `ParseError`.
+Backends never guess.
+
+Object keys are unique in every format: a document with duplicates —
+duplicate JSON/YAML keys, repeated sibling element names under an XML object
+element, duplicate INI keys within a section or repeated section headers —
+fails `load()` with `ParseError`. Duplicates are never resolved last-wins.
+
+The version carrier itself parses strictly: the value must be an unsigned
+decimal integer representable in `VersionId` (`std::uint32_t`). In JSON and
+YAML it must be a native unquoted integer scalar; in XML and INI it is
+decimal digits only (leading zeros permitted, no sign; INI's usual
+whitespace trim applies). Anything else — quoted numbers, floats,
+negatives, values above `2^32 - 1` — fails `load()` with `InvalidVersion`,
+the same code as missing metadata.
+
+**JSON** — native 1:1. `null`/bool/string map directly; integral JSON numbers
+map to `Int`, all others to `Double`; a number outside `std::int64_t`'s range
+fails `load()` with `ParseError` (strictness over silent precision loss).
+Objects and arrays map directly, insertion-ordered (`nlohmann::ordered_json`).
+
+**YAML** — native 1:1 over the YAML core schema: plain `true`/`false` →
+`Bool`, integer literals → `Int`, float literals → `Double`, `~`/`null` →
+`Null`, everything else — including quoted scalars — → `String`. Anchors and
+aliases are admitted and resolved by **deep copy** into the model (the tree
+owns all storage; no sharing survives parsing); cyclic alias structures fail
+`load()` with `ParseError`. Merge keys (`<<`) are rejected with `ParseError`
+in v1 — their precedence semantics would reintroduce guessing.
+Multi-document streams fail `load()` with `ParseError`.
+
+**XML** — elements only. An `Object` maps to an element whose children are
+its members in order; an **empty** `Object` carries `type="object"`, keeping
+it distinguishable from an empty string. An `Array` maps to an element
+carrying `type="array"` whose children are `<item>` elements. Scalars map to
+element text with a reserved `type` attribute (`bool`, `int`, `double`,
+`null`; absent means `string` — a bare empty element is therefore the empty
+string). Elements with a scalar or absent `type` must have no child elements,
+and `type="object"`/`type="array"` elements must have no text; violations
+fail `load()` with `ParseError`. The document root is
+`<config version="N">`. Any attribute other than the reserved `version`
+(root) and `type` fails `load()` with `ParseError`; a model key that is not
+a valid XML element name fails `save()` with `SerializationError`.
+
+**INI** — two levels. Root members that are `Object`s of scalars map to
+sections; root-level scalar members appear before the first section. Deeper
+nesting and arrays are unrepresentable (`SerializationError` on `save()`).
+Leading/trailing whitespace around keys and values is trimmed; interior
+whitespace is preserved. Scalar text is then classified by exact literal,
+case-sensitively: `true`/`false` → `Bool`; `null` → `Null`; `-?[0-9]+` →
+`Int` (a match that overflows `std::int64_t` fails `load()` with
+`ParseError`, mirroring the JSON rule); `-?[0-9]+\.[0-9]+` with an optional
+`[eE][+-]?[0-9]+` exponent, or `-?[0-9]+` with a mandatory exponent →
+`Double` — no `.5`, `1.`, `nan`, `inf`, hex, or locale-dependent forms;
+double-quoted text → `String` (verbatim, quotes stripped); anything else →
+`String`. Inside double quotes, `\"` and `\\` are the only escapes; any
+other backslash sequence fails `load()` with `ParseError`. `save()` emits
+doubles via `std::to_chars` (locale-independent, round-trip exact) and
+double-quotes a string — escaping `"` and `\` — when it would re-classify
+as another type, has leading/trailing whitespace, or contains `"` or `\`.
+Strings containing newlines or carriage returns are unrepresentable in the
+line-based format and fail `save()` with `SerializationError`. The `[meta]`
+section's `version` key is the reserved carrier.
 
 ---
 
@@ -474,6 +622,10 @@ the library that error path is unreachable: `ConfigRuntime::create()` rejects
 an empty catalog (§9.2), so the runtime's own calls unwrap safely. A
 `DefaultFactory` that throws inside `createDefault()` is caught and mapped to
 `MigrationFailed` (ADR-018).
+
+`registerVersion` rejects an empty `DefaultFactory` with `MigrationFailed` —
+the callback family's error code (§10) — so a null callable is caught at
+registration, never at first use.
 
 ---
 
@@ -526,6 +678,10 @@ public:
 
 Failures return `MissingMigration` / `InvalidVersion`.
 
+`registerMigration` rejects an empty `MigrationFn` with `MigrationFailed`: a
+null callable is a registration error, surfaced immediately rather than at
+first execution.
+
 ### 8.2 MigrationEngine (`migration_engine.hpp`)
 
 ```cpp
@@ -558,6 +714,12 @@ while current < target:
   `InvalidVersion` (downgrade is handled at the runtime layer, not here).
 * A migration function that throws is caught and mapped to `MigrationFailed`
   (ADR-018).
+* A migration function that **returns** an error is reported identically: the
+  engine maps it to `MigrationFailed`, embedding the step and the original
+  diagnostic in `Error::message` (e.g. `"migration 3->4 failed: InvalidType:
+  ..."`). Callers see one code for any failed step — the underlying cause
+  (say, an `InvalidType` from `model().set(...)`) survives in the message,
+  not the code.
 * `migrate()` is also the **direct migration** entry point (Architecture
   §Direct Migration Workflow, ADR-016) for apps that decide for themselves
   when migration should happen and bypass `ConfigRuntime`.
@@ -758,15 +920,21 @@ A single, predictable mapping keeps diagnostics consistent across layers:
 | Unknown/duplicate version, bad endpoint | `InvalidVersion` |
 | `supported` version not registered in the catalog | `InvalidVersion` |
 | Stream carries no version metadata in `load()` | `InvalidVersion` |
+| Malformed or out-of-range version carrier in `load()` | `InvalidVersion` |
 | Empty catalog (`ConfigRuntime::create()`, `latestVersion()`) | `InvalidVersion` |
 | Persisted `config.version` unregistered when an upgrade is required | `InvalidVersion` |
 | Engine `target` unregistered or below the current version | `InvalidVersion` |
 | User callback threw (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |
+| Empty callable at registration (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |
 | Model contains the format's reserved version carrier in `save()` | `SerializationError` |
 | Non-object document root in `load()` | `ParseError` |
 | Non-object root passed to `ConfigModel::fromValue` | `InvalidType` |
-| Object key contains a reserved path character in `load()` | `ParseError` |
-| Object key contains a reserved path character in `fromValue` / subtree `set` | `InvalidPath` |
+| Object key not path-addressable (empty or reserved character) in `load()` | `ParseError` |
+| Object key not path-addressable (empty or reserved character) in `fromValue` / subtree `set` | `InvalidPath` |
+| Duplicate object keys / sections / sibling elements in `load()` | `ParseError` |
+| Stale `ConfigNode` handle passed to a `Result`-returning accessor | `NodeNotFound` |
+| Backend library / stream exception in `load()` | `ParseError` |
+| Backend library / stream exception in `save()` | `SerializationError` |
 
 `synchronize()` reports failures directly through `Result`'s error channel —
 there is no failure status — and guarantees the caller's configuration is
@@ -830,26 +998,36 @@ configure_package_config_file(cmake/ConfigManagerConfig.cmake.in ...)
 
 Unit tests target the model and orchestration logic without format backends:
 
-* **ConfigPath**: grammar acceptance/rejection, nested arrays, reserved chars.
+* **ConfigPath**: grammar acceptance/rejection, nested arrays, reserved chars,
+  empty segments (`a.`, `.a`, `a..b`), malformed indices (`arr[]`, `arr[-1]`,
+  `arr[1x]`), leading index, text after `]`, index overflow.
 * **ConfigModel**: upsert creation, typed get/set, `InvalidType`/`NodeNotFound`,
   `remove` semantics, strict scalar conversion rules (lossless-only
   Int↔Double, no Bool/String coercion, no stringification); member order
   preserved across `getValue`/`set` round-trips (ADR-022); `fromValue`
-  rejects non-object roots (`InvalidType`) and reserved-character keys
-  (`InvalidPath`, ADR-021).
+  rejects non-object roots (`InvalidType`) and non-addressable keys — empty
+  or reserved-character (`InvalidPath`, ADR-021).
 * **Node lifetime**: handle stays valid across reparent/move; becomes invalid
   after `remove` (generation check); handles remain valid across a move of the
-  `ConfigModel` object itself (heap arena transfer).
+  `ConfigModel` object itself (heap arena transfer); `Result`-returning
+  accessors on a stale handle fail `NodeNotFound`; `size()` returns 0 for
+  scalars.
 * **Upsert edge cases**: type-conflict writes fail `InvalidType` and leave the
-  model unchanged; array writes may append at one past the end while larger
-  indices fail `NodeNotFound`; empty path → `InvalidPath`; `contains()`
-  returns `false` on malformed paths.
+  model unchanged — including cross-type writes to the final node; same-type
+  subtree writes keep the target handle valid while invalidating descendant
+  handles; any failed multi-segment write leaves no partially created
+  intermediates (write atomicity, ADR-019); array writes may append at one
+  past the end while larger indices fail `NodeNotFound`; empty path →
+  `InvalidPath`; `contains()` returns `false` on malformed paths.
 * **MigrationRegistry::validate**: missing edge, duplicate edge, edge skipping
-  a registered version, unknown endpoint.
+  a registered version, unknown endpoint; empty callable rejected at
+  registration (`MigrationFailed`), for `registerVersion` too.
 * **MigrationEngine**: multi-step forward chain (including sparse version ids,
   e.g. v2 → v4), version advances per step, `MissingMigration` surfaced;
   no-op when already at target; unregistered or backward target →
-  `InvalidVersion`; throwing migration function mapped to `MigrationFailed`.
+  `InvalidVersion`; throwing migration function mapped to `MigrationFailed`;
+  returned migration error wrapped as `MigrationFailed` with the original
+  diagnostic preserved in the message.
 * **ConfigRuntime**: each `SyncStatus`; unregistered `supported` version →
   `InvalidVersion`; transactional rollback (original unchanged when a mid-chain
   migration fails); repair fills missing only and never overwrites; repair runs
@@ -860,9 +1038,15 @@ Unit tests target the model and orchestration logic without format backends:
 
 A small backend round-trip suite (`load`→`save`→`load`) is added per format once
 core is stable, including the mandatory-version failure path (`load()` on
-unversioned data → `InvalidVersion`), reserved-character key rejection
-(`ParseError`, ADR-021), and member-order preservation across a
-`load`→`save` round trip (ADR-022). The test framework is **GoogleTest**
+unversioned data → `InvalidVersion`, malformed/out-of-range carrier →
+`InvalidVersion`), non-addressable key rejection (empty or
+reserved-character keys → `ParseError`, ADR-021), backend exception mapping
+(throwing stream/parser → `ParseError`/`SerializationError`, ADR-018),
+format-mapping restrictions (§6.1: unrepresentable model → `SerializationError`,
+unrepresentable document → `ParseError`, duplicate keys/sections/sibling
+elements → `ParseError`, XML empty-object vs empty-string round trip, INI
+literal-grammar edges), and member-order preservation across a `load`→`save`
+round trip (ADR-022). The test framework is **GoogleTest**
 (pinned in §11.1), fetched via the same `FetchContent` pattern so the test
 build is self-contained.
 
