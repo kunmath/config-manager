@@ -651,7 +651,19 @@ This allows applications to:
 * Perform validation before migration
 * Perform validation after migration
 * Use external schema validators
+* Decide when to migrate using their own comparison logic
 * Migrate configurations without using ConfigRuntime
+
+Direct migration has raw semantics. Unlike synchronize(), it:
+
+* Mutates the configuration in place and is not transactional. The
+  version advances per step, so a mid-chain failure leaves the
+  configuration at the last successfully reached version. Callers
+  needing rollback should clone the model first.
+* Performs no repair. Missing-key backfill is the caller's
+  responsibility.
+* Does not force registry validation. Callers should invoke
+  `registry.validate(catalog)` themselves if they bypass ConfigRuntime.
 
 ---
 
@@ -988,3 +1000,25 @@ Int converts to Double only when the value is exactly representable as a
 double. Double converts to Int only when the value is integral and within the
 range of the integer type. Bool and String never convert. All other
 combinations fail with InvalidType.
+
+---
+
+## ADR-016
+
+MigrationEngine is a supported standalone entry point with raw semantics.
+
+Applications may drive migration directly, using their own comparison and
+validation logic. The direct path mutates in place, is not transactional,
+performs no repair, and does not force registry validation. ConfigRuntime
+remains the safe, orchestrated path.
+
+---
+
+## ADR-017
+
+Migration functions receive a MigrationContext rather than the model directly.
+
+The context exposes the configuration model and the step's source and target
+versions. It can grow new capabilities (logging, defaults access) without
+changing the migration function signature — a signature change would break
+every registered migration in every consuming application.

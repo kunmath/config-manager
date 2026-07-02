@@ -406,7 +406,17 @@ be consecutive integers — a catalog of v1, v2, v4 makes v2 and v4 adjacent.
 ### 8.1 MigrationRegistry (`migration_registry.hpp`)
 
 ```cpp
-using MigrationFn = std::function<Result<void>(ConfigModel&)>;  // transforms in place
+// Migrations receive a context, not the model directly (ADR-017). The context
+// can grow (logging sink, defaults access, ...) without changing MigrationFn —
+// a signature change would break every registered migration in every consumer.
+class MigrationContext {
+public:
+    ConfigModel& model() noexcept;              // the configuration being migrated
+    VersionId    fromVersion() const noexcept;  // version this step migrates from
+    VersionId    toVersion() const noexcept;    // version this step migrates to
+};
+
+using MigrationFn = std::function<Result<void>(MigrationContext&)>;  // transforms in place
 
 struct MigrationEdge {
     VersionId   from;
@@ -456,7 +466,8 @@ current = config.version
 while current < target:
     next = catalog.nextVersion(current)                    // InvalidVersion if unknown
     edge = registry.findMigration(current, next)           // MissingMigration if absent
-    edge->apply(config.model)                              // MigrationFailed on error
+    ctx  = MigrationContext{ config.model, current, next } // built per step
+    edge->apply(ctx)                                       // MigrationFailed on error
     current = next
     config.version = current                               // version advances per step
 ```
@@ -464,7 +475,12 @@ while current < target:
 * Forward-only; if `config.version > target` the engine reports
   `MigrationFailed` (downgrade is handled at the runtime layer, not here).
 * `migrate()` is also the **direct migration** entry point (Architecture
-  §Direct Migration Workflow) for apps that bypass `ConfigRuntime`.
+  §Direct Migration Workflow, ADR-016) for apps that decide for themselves
+  when migration should happen and bypass `ConfigRuntime`.
+* Direct semantics are **raw**: in-place mutation, no transactionality (a
+  mid-chain failure leaves the config at the last reached version — callers
+  wanting rollback `clone()` first), no repair, and no forced registry
+  validation (`registry.validate(catalog)` is the caller's job).
 
 ---
 
