@@ -108,6 +108,20 @@ Recoverable failures are represented through Result types.
 Result<T>
 ```
 
+Boundary rules make this guarantee concrete:
+
+* Exceptions other than `std::bad_alloc` thrown by user-supplied
+  callbacks (migration functions, default factories) never escape the
+  library. They are caught at the invocation site and converted to a
+  `Result` error.
+* Serialization backends are equally non-throwing: exceptions from
+  parser libraries or stream operations (including streams with
+  exception masks set) are caught inside load()/save() and converted
+  to `ParseError` / `SerializationError`.
+* `std::bad_alloc` is not a recoverable configuration error. Memory
+  exhaustion may propagate from anywhere, including callbacks and
+  backends.
+
 ---
 
 # High-Level Architecture
@@ -161,6 +175,8 @@ model.set(
     "server.port",
     8080);
 ```
+
+The root of a model is always an Object.
 
 Non-responsibilities:
 
@@ -231,7 +247,10 @@ migrates the configuration. Repair and migration belong exclusively to
 The configuration version is mandatory. If a stream contains no version
 metadata, `load()` fails with `InvalidVersion`; the library never
 guesses or assumes a version for unversioned data, because such data
-cannot be handled reliably.
+cannot be handled reliably. The version must parse as an unsigned
+decimal integer representable in the version type; malformed or
+out-of-range values fail load() with `InvalidVersion`, exactly like
+missing metadata.
 
 Each ConfigInterface implementation is responsible for serializing,
 deserializing, and reading/writing the configuration version according
@@ -239,6 +258,40 @@ to its storage format.
 
 The library does not impose a common serialization envelope across
 different configuration formats.
+
+Formats differ in expressive power. A model that a format cannot
+represent fails save() with `SerializationError`; a document that the
+model cannot represent fails load() with `ParseError`. Each backend's
+exact mapping — including the restricted XML and INI mappings — is
+defined in the design (HighLevelDesign.md §6.1). Backends never guess.
+
+Object keys are unique. A document carrying duplicates — duplicate
+JSON/YAML keys, repeated sibling elements under an XML object, duplicate
+INI keys or section headers — fails load() with `ParseError`; backends
+never resolve duplicates by last-wins.
+
+The version carrier is reserved within each format. load() consumes it
+as metadata — it never appears in the resulting ConfigModel — and
+save() writes it from `VersionedConfig::version`. If the model itself
+already contains the reserved carrier (for example a `__version` key in
+JSON), save() fails with `SerializationError` rather than silently
+producing ambiguous output.
+
+Each backend defines its reserved carrier as a concrete model location:
+the top-level `__version` key in JSON, the top-level `version` key in
+YAML, and the `meta.version` path in INI. The XML carrier is a root
+attribute, which lives outside the model's key space, so no model path
+can conflict with it and the save() check is vacuous there.
+
+The model root is always an Object. Documents with a non-object root,
+such as a top-level JSON array, fail to load with `ParseError`.
+
+Object keys that are not path-addressable — empty, or containing
+reserved path characters (`.` `[` `]`) — also fail to load with
+`ParseError`. Version 1 paths have no escaping and the empty string is
+not a valid path, so such keys could never be addressed, mutated, or
+repaired; the library rejects them rather than admitting unaddressable
+data (ADR-021).
 
 Implementations:
 
@@ -277,7 +330,7 @@ catalog.registerVersion(
 ```cpp
 catalog.latestVersion();
 
-catalog.defaultFactory(4);
+catalog.createDefault(4);
 ```
 
 Non-responsibilities:
@@ -309,7 +362,7 @@ registry.registerMigration(
 ```cpp
 registry.findMigration(3, 4);
 
-registry.validate();
+registry.validate(catalog);
 ```
 
 Non-responsibilities:
@@ -347,6 +400,10 @@ config.version
 
 Migration APIs never accept a source version parameter.
 
+A migration step that fails — whether the migration function returns an
+error or throws — is reported as `MigrationFailed`, with the underlying
+diagnostic preserved in the error message.
+
 ---
 
 ## ConfigRuntime
@@ -360,8 +417,15 @@ ConfigRuntime
     |
     +-- VersionCatalog
     +-- MigrationRegistry
-    +-- MigrationEngine
+    |
+    +-> MigrationEngine   (constructed per synchronize() call, never stored)
 ```
+
+`ConfigRuntime` does not store a `MigrationEngine` member. The engine
+holds references to the catalog and registry, so a stored engine would
+dangle once the runtime object is moved. The engine is stateless and
+cheap: `synchronize()` constructs one over the owned catalog and
+registry on each call.
 
 Responsibilities:
 
@@ -452,6 +516,14 @@ Validation includes:
 * Only migrations between adjacent registered versions may be
   registered.
 
+Construction also fails, with `InvalidVersion`, when the catalog
+declares no versions: an empty catalog has no latest version to
+synchronize toward.
+
+Empty callables are rejected even earlier, at registration time: a null
+migration function or default factory fails registerMigration() /
+registerVersion() immediately.
+
 If validation fails, ConfigRuntime construction fails before any
 configuration can be synchronized.
 
@@ -498,8 +570,15 @@ enum class SyncStatus
 ```
 
 * **InSync** – Configuration matches the application's supported version.
-* **UpgradeRequired** – Configuration is older and can be migrated.
+* **UpgradeRequired** – Configuration is older than the supported
+  version; synchronize() will attempt migration.
 * **DowngradeRequired** – Configuration is newer than the application supports.
+
+inspect() is a pure version comparison: it does not validate that
+`supportedVersion` or the configuration's version is registered in the
+catalog. That validation happens in synchronize(), which can therefore
+fail with `InvalidVersion` for a pairing inspect() reported as
+`UpgradeRequired`.
 
 There is no failure status. Failures during synchronization are
 reported through the `Result` error channel, and the caller's
@@ -528,6 +607,14 @@ runtime.synchronize(
 If it is not, synchronize() fails with `InvalidVersion` before any other
 work is performed.
 
+When an upgrade is required, the configuration's current version must
+also be registered: an unregistered persisted version fails with
+`InvalidVersion` before any modification, instead of failing mid-chain
+inside the migration engine. A version newer than `supportedVersion` is
+reported as `DowngradeRequired` regardless of registration —
+configurations written by newer applications are expected to carry
+versions this catalog does not know.
+
 A convenience overload omits the parameter and targets the latest
 registered version:
 
@@ -549,6 +636,8 @@ happens, and exactly one commit point.
         DowngradeRequired -----------> return (no modification)
                        |
         InSync / UpgradeRequired
+                       |
+  Validate current version registered --> Error: InvalidVersion
                        |
               Copy configuration
                        |
@@ -594,6 +683,9 @@ Synchronization is transactional with respect to the in-memory VersionedConfig.
   configuration is guaranteed unmodified.
 * The commit occurs only when migration or repair actually changed
   something; a clean `InSync` pass leaves the original object untouched.
+* A commit replaces the caller's model, which invalidates every
+  ConfigNode handle previously obtained from that configuration (see
+  ConfigNode Lifetime).
 * The library never writes to persistent storage. Saving the migrated
   configuration remains the responsibility of the application.
 
@@ -626,6 +718,11 @@ Arrays are atomic. A default array is copied only when its key is
 entirely absent from the configuration. Existing arrays are never
 merged element-wise, extended, or truncated.
 
+Repair descends only where both the configuration and the defaults hold
+an Object at the same key. A key present in the configuration with a
+different type than the default is left untouched and its default
+children are not backfilled: presence always wins over shape.
+
 This allows ConfigManager to recover from common configuration drift
 without introducing a full schema validation framework, and keeps the
 library from slowly turning into a schema validator.
@@ -651,7 +748,27 @@ This allows applications to:
 * Perform validation before migration
 * Perform validation after migration
 * Use external schema validators
+* Decide when to migrate using their own comparison logic
 * Migrate configurations without using ConfigRuntime
+
+Direct migration has raw semantics. Unlike synchronize(), it:
+
+* Mutates the configuration in place and is not transactional. The
+  version advances per step, so after a mid-chain failure the version
+  reflects the last successfully completed step — but the model may
+  additionally contain partial mutations from the failed step, since a
+  migration function can modify the model before returning an error.
+  Treat the configuration as suspect after any failure; callers needing
+  rollback should clone the model first.
+* Performs no repair. Missing-key backfill is the caller's
+  responsibility.
+* Does not force registry validation. Callers should invoke
+  `registry.validate(catalog)` themselves if they bypass ConfigRuntime.
+* Requires the target version to be registered in the catalog and not
+  below the current version; otherwise it fails with `InvalidVersion`
+  (downgrades are never performed).
+* Is a successful no-op when the configuration is already at the target
+  version.
 
 ---
 
@@ -689,6 +806,11 @@ provably lossless:
 
 All other combinations fail with `InvalidType`. Values are never
 stringified and strings are never parsed into numbers.
+
+`Int` is stored as a 64-bit signed integer. Reads into narrower or
+differently signed integer types succeed only when the stored value is
+exactly representable in the requested type; otherwise they fail with
+`InvalidType`.
 
 ---
 
@@ -789,7 +911,31 @@ Reserved characters:
 ]
 ```
 
+The complete grammar:
+
+```text
+path    := segment ( "." segment )*
+segment := key index*
+key     := char+            ; any byte except "." "[" "]"
+index   := "[" digit+ "]"   ; decimal digits only
+```
+
+Anything the grammar does not produce fails with `InvalidPath`: empty
+keys, a leading index, malformed or non-decimal indices, or text
+directly following `]` other than `.`, `[`, or end-of-path. Whitespace
+is never trimmed; it is an ordinary key character.
+
 Version 1 does not support escaping.
+
+Because there is no escaping, and because the empty string is not a
+valid path segment, an object key that is empty or contains a reserved
+character can never be addressed through a path. Such keys are rejected
+at the library's boundaries rather than admitted as unaddressable data
+(ADR-021).
+
+The empty string is not a valid path and fails with `InvalidPath`. No
+string path addresses the root node; the root is reached through the
+model's root handle.
 
 ---
 
@@ -809,22 +955,69 @@ creates "network" if necessary before writing "timeout".
 
 This makes writing migrations much simpler and more predictable.
 
+Upsert creates structure but never changes type. If an existing node's
+type conflicts with what the path requires — for example
+`set("network.timeout", 10)` when `network` is currently a string — the
+write fails with `InvalidType` and nothing is modified. Migrations that
+change a node's type remove the node explicitly first.
+
+The rule covers the final node as well as intermediate segments: a
+write to an existing node succeeds only when it preserves the node's
+type. Same-type writes update the node in place, so handles to it stay
+valid; replacing a container's contents removes its previous
+descendants, whose handles become detectably invalid. Cross-type writes
+fail with `InvalidType`.
+
+Array indices are bounded. A write may target an existing element or
+the index one past the end (an append); larger indices fail with
+`NodeNotFound`. Missing intermediate arrays are created empty, so a
+write to `users[0]` when `users` is absent creates the array and
+appends its first element. Holes are never fabricated.
+
+Writes are atomic. set() validates the entire path against the existing
+tree before mutating, so a failed write — malformed path, type conflict,
+or out-of-bounds index — leaves the configuration unmodified. No
+partially created intermediate nodes are left behind.
+
+`contains()` never fails: it returns false for malformed paths as well
+as absent ones.
+
 ---
 
 # ConfigNode Lifetime
 
 ConfigModel owns all storage.
 
-ConfigNode acts as a lightweight handle.
+ConfigNode acts as a lightweight, read-only handle. All mutation goes
+through ConfigModel.
 
 A ConfigNode remains valid until:
 
 * ConfigModel is destroyed
 * Referenced node is removed
 
-Moving nodes does not invalidate handles.
+Moving nodes within the model does not invalidate handles. No public
+operation reparents a node in version 1; this stability is a storage
+invariant that future move/rename APIs will inherit. The documented
+rename composition (getValue → set → remove) instead copies the
+subtree: handles into the removed original are invalidated
+(detectably) and do not carry over to the copy.
 
-Removing nodes invalidates handles referencing those nodes.
+Removing nodes invalidates handles referencing those nodes; such
+handles detectably report themselves invalid. Fallible (Result-returning)
+accessors on a detectably invalid handle fail with `NodeNotFound`; the
+non-failing accessors (type(), size()) require a valid handle as a
+precondition.
+
+Node storage lives on the heap, owned by the model, and handles
+reference that storage directly rather than the ConfigModel object.
+Moving the ConfigModel object itself therefore keeps handles valid:
+they follow the new owner. Destroying a model — including move-assigning another model onto
+it — destroys the storage and invalidates every handle into it. This is
+not detectable through the handle; using one afterwards is undefined
+behavior, as with invalidated container iterators. In particular, a
+successful synchronize() that commits replaces the caller's model and
+therefore invalidates all handles obtained from it beforehand.
 
 ---
 
@@ -988,3 +1181,124 @@ Int converts to Double only when the value is exactly representable as a
 double. Double converts to Int only when the value is integral and within the
 range of the integer type. Bool and String never convert. All other
 combinations fail with InvalidType.
+
+---
+
+## ADR-016
+
+MigrationEngine is a supported standalone entry point with raw semantics.
+
+Applications may drive migration directly, using their own comparison and
+validation logic. The direct path mutates in place, is not transactional,
+performs no repair, and does not force registry validation. ConfigRuntime
+remains the safe, orchestrated path.
+
+---
+
+## ADR-017
+
+Migration functions receive a MigrationContext rather than the model directly.
+
+The context exposes the configuration model and the step's source and target
+versions. It can grow new capabilities (logging, defaults access) without
+changing the migration function signature — a signature change would break
+every registered migration in every consuming application.
+
+---
+
+## ADR-018
+
+The non-throwing public API is enforced at every boundary where user or
+third-party code can throw: user-supplied callbacks and serialization
+backends.
+
+Exceptions other than `std::bad_alloc` never escape the library. They
+are caught at the boundary and mapped to an ErrorCode:
+
+* User-supplied callbacks — migration functions and default
+  factories — map to `MigrationFailed`.
+* Serialization backends — parser libraries and stream operations,
+  including streams with exception masks set — map to `ParseError`
+  inside load() and `SerializationError` inside save().
+
+The catch order at every boundary is fixed:
+
+1. `std::bad_alloc` is caught first and rethrown, so the catch-all
+   below can never swallow it.
+2. Exceptions derived from `std::exception` preserve `what()` in
+   `Error::message`.
+3. Any other thrown type is caught by a catch-all and mapped with a
+   fixed fallback message naming the boundary (e.g. "unknown exception
+   from user callback") — there is no `what()` to preserve.
+
+`std::bad_alloc` is exempt from this rule: it is not a recoverable
+configuration error, and memory exhaustion may propagate from anywhere,
+including callbacks and backends. The Result channel is reserved for
+failures an application can meaningfully handle.
+
+---
+
+## ADR-019
+
+Upsert creates structure but never changes type.
+
+A write whose path conflicts with an existing node's type fails with
+`InvalidType` and modifies nothing. Migrations that change a node's type
+remove the node explicitly first.
+
+The rule covers the final node as well as intermediate segments: a write
+to an existing node succeeds only when it preserves the node's type.
+Same-type writes update the node in place (handles to it stay valid;
+descendants of a replaced container are removed and their handles
+detectably invalidated); cross-type writes fail with `InvalidType`.
+
+Array writes are bounded: an index may address an existing element or
+append at one past the end. Larger indices fail with `NodeNotFound`, and
+missing intermediate arrays are created empty. Holes are never
+fabricated.
+
+Writes are atomic: the entire path is validated against the existing
+tree before any mutation, so a failed write of any kind leaves no
+partially created intermediate nodes.
+
+---
+
+## ADR-020
+
+The model root is always an Object, and each backend's version carrier
+is reserved metadata.
+
+load() consumes the version carrier — it never appears in the resulting
+model — and rejects non-object document roots with `ParseError`. save()
+writes the carrier from `VersionedConfig::version` and fails with
+`SerializationError` if the model itself already contains the reserved
+carrier, rather than silently producing ambiguous output.
+
+---
+
+## ADR-021
+
+Object keys must be path-addressable: empty keys and keys containing
+reserved characters are rejected at the boundaries.
+
+A key is path-addressable when it is non-empty and contains none of
+`.` `[` `]`. ConfigPath has no escaping in version 1 and the empty
+string is not a valid path segment, so a key that is empty or contains
+a reserved character could never be addressed, mutated, or repaired
+through the path API. Rather than admit silently unaddressable data,
+the boundaries reject such keys: load() fails with `ParseError`, and
+fromValue() / subtree insertion fail with `InvalidPath`. Path escaping
+in a later version may lift the reserved-character restriction.
+
+---
+
+## ADR-022
+
+Object member order is insertion order, preserved end-to-end.
+
+Both tree representations — the value-semantic ConfigValue and the
+model's node storage — keep object members in insertion order. A
+document keeps its author's key order through load, mutation, and save,
+and a subtree extracted and re-inserted preserves its member order. One
+ordering rule everywhere keeps serialization and repair deterministic,
+which matters for diffing and reproducible migrations.
