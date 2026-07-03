@@ -1,7 +1,9 @@
 #ifndef CONFIGMANAGER_CONFIG_VALUE_HPP_
 #define CONFIGMANAGER_CONFIG_VALUE_HPP_
 
+#include <cassert>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -49,6 +51,14 @@ class ConfigValue {
       value.type_ = NodeType::Bool;
       value.scalar_ = scalar;
     } else if constexpr (std::is_integral_v<T>) {
+      if constexpr (std::is_unsigned_v<T>) {
+        // Builder precondition: Int is stored as std::int64_t. The fallible
+        // boundary for out-of-range values is ConfigModel::set.
+        assert(static_cast<std::uint64_t>(scalar) <=
+                   static_cast<std::uint64_t>(
+                       std::numeric_limits<std::int64_t>::max()) &&
+               "ConfigValue::of: unsigned value exceeds Int range");
+      }
       value.type_ = NodeType::Int;
       value.scalar_ = static_cast<std::int64_t>(scalar);
     } else if constexpr (std::is_floating_point_v<T>) {

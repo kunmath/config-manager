@@ -17,6 +17,8 @@ include(cmake/Dependencies.cmake)
 
 # ---- Core library (no serialization backends) --------------------------------
 add_library(configmanager_core
+  src/config_model.cpp
+  src/config_node.cpp
   src/config_path.cpp
   src/config_value.cpp)
 add_library(configmanager::core ALIAS configmanager_core)
