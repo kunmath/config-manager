@@ -20,7 +20,11 @@ add_library(configmanager_core
   src/config_model.cpp
   src/config_node.cpp
   src/config_path.cpp
-  src/config_value.cpp)
+  src/config_runtime.cpp
+  src/config_value.cpp
+  src/migration_engine.cpp
+  src/migration_registry.cpp
+  src/version_catalog.cpp)
 add_library(configmanager::core ALIAS configmanager_core)
 
 target_include_directories(configmanager_core PUBLIC
