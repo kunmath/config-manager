@@ -12,6 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(CONFIGMANAGER_USE_SYSTEM_DEPS
   "Resolve all dependencies via find_package only (no network fetch)" OFF)
 option(CONFIGMANAGER_BUILD_TESTS "Build ConfigManager unit tests" ON)
+option(CONFIGMANAGER_BUILD_JSON
+  "Build the JSON serialization backend (configmanager::json)" ON)
 
 include(cmake/Dependencies.cmake)
 
@@ -35,6 +37,11 @@ target_compile_features(configmanager_core PUBLIC cxx_std_20)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(configmanager_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# ---- Serialization backends (opt-in targets) -----------------------------------
+if(CONFIGMANAGER_BUILD_JSON)
+  add_subdirectory(backends/json)
 endif()
 
 # ---- Tests --------------------------------------------------------------------

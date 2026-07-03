@@ -12,5 +12,10 @@ target_link_libraries(configmanager_tests PRIVATE
   configmanager::core
   GTest::gtest_main)
 
+if(CONFIGMANAGER_BUILD_JSON)
+  target_sources(configmanager_tests PRIVATE json_interface_test.cpp)
+  target_link_libraries(configmanager_tests PRIVATE configmanager::json)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(configmanager_tests)
