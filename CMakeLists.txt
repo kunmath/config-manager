@@ -14,6 +14,8 @@ option(CONFIGMANAGER_USE_SYSTEM_DEPS
 option(CONFIGMANAGER_BUILD_TESTS "Build ConfigManager unit tests" ON)
 option(CONFIGMANAGER_BUILD_JSON
   "Build the JSON serialization backend (configmanager::json)" ON)
+option(CONFIGMANAGER_BUILD_XML
+  "Build the XML serialization backend (configmanager::xml)" ON)
 option(CONFIGMANAGER_BUILD_EXAMPLES "Build ConfigManager example programs" ON)
 
 include(cmake/Dependencies.cmake)
@@ -43,6 +45,9 @@ endif()
 # ---- Serialization backends (opt-in targets) -----------------------------------
 if(CONFIGMANAGER_BUILD_JSON)
   add_subdirectory(backends/json)
+endif()
+if(CONFIGMANAGER_BUILD_XML)
+  add_subdirectory(backends/xml)
 endif()
 
 # ---- Tests & examples (both register with CTest) -------------------------------

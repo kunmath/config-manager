@@ -1,6 +1,7 @@
 # Dependency acquisition: prefer a system/find_package copy, otherwise fetch
 # and build as part of this build (HighLevelDesign.md §11.1). Pinned tags:
-#   tl-expected v1.1.0, nlohmann/json v3.11.3, googletest v1.14.0
+#   tl-expected v1.1.0, nlohmann/json v3.11.3, pugixml v1.14,
+#   googletest v1.14.0
 include(FetchContent)
 
 # ---- tl::expected (Result backend, header-only; the only core dependency) -----
@@ -33,6 +34,29 @@ if(CONFIGMANAGER_BUILD_JSON)
       GIT_TAG        v3.11.3
       GIT_SHALLOW    TRUE)
     FetchContent_MakeAvailable(nlohmann_json)
+  endif()
+endif()
+
+# ---- pugixml (XML backend only, consumed header-only when fetched) --------------
+if(CONFIGMANAGER_BUILD_XML)
+  find_package(pugixml 1.14 QUIET)
+  if(NOT TARGET pugixml::pugixml)
+    if(CONFIGMANAGER_USE_SYSTEM_DEPS)
+      message(FATAL_ERROR
+        "CONFIGMANAGER_USE_SYSTEM_DEPS is ON but pugixml was not found "
+        "via find_package")
+    endif()
+    # Sources only: the XML backend compiles pugixml in header-only mode, and
+    # pugixml's own build must not be added — its install rules are
+    # unconditional and would pollute this project's install tree. Pointing
+    # SOURCE_SUBDIR at a directory without a CMakeLists.txt makes
+    # MakeAvailable download without calling add_subdirectory.
+    FetchContent_Declare(pugixml
+      GIT_REPOSITORY https://github.com/zeux/pugixml.git
+      GIT_TAG        v1.14
+      GIT_SHALLOW    TRUE
+      SOURCE_SUBDIR  cmake-subdir-not-used)
+    FetchContent_MakeAvailable(pugixml)
   endif()
 endif()
 
