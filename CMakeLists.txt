@@ -14,6 +14,7 @@ option(CONFIGMANAGER_USE_SYSTEM_DEPS
 option(CONFIGMANAGER_BUILD_TESTS "Build ConfigManager unit tests" ON)
 option(CONFIGMANAGER_BUILD_JSON
   "Build the JSON serialization backend (configmanager::json)" ON)
+option(CONFIGMANAGER_BUILD_EXAMPLES "Build ConfigManager example programs" ON)
 
 include(cmake/Dependencies.cmake)
 
@@ -44,10 +45,15 @@ if(CONFIGMANAGER_BUILD_JSON)
   add_subdirectory(backends/json)
 endif()
 
-# ---- Tests --------------------------------------------------------------------
-if(CONFIGMANAGER_BUILD_TESTS)
+# ---- Tests & examples (both register with CTest) -------------------------------
+if(CONFIGMANAGER_BUILD_TESTS OR CONFIGMANAGER_BUILD_EXAMPLES)
   enable_testing()
+endif()
+if(CONFIGMANAGER_BUILD_TESTS)
   add_subdirectory(tests)
+endif()
+if(CONFIGMANAGER_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()
 
 # ---- Installation / package export ---------------------------------------------
