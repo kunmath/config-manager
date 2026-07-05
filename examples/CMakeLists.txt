@@ -27,3 +27,11 @@ if(CONFIGMANAGER_BUILD_JSON)
   configure_file(data/relaygate_v1.json data/relaygate_v1.json COPYONLY)
   configure_file(data/relaygate_future.json data/relaygate_future.json COPYONLY)
 endif()
+
+# 04 showcases the XML wire mapping, so it exists only when the XML backend
+# is built.
+if(CONFIGMANAGER_BUILD_XML)
+  configmanager_add_example(04_sensorbridge_xml)
+  target_link_libraries(04_sensorbridge_xml PRIVATE configmanager::xml)
+  configure_file(data/sensorbridge_v1.xml data/sensorbridge_v1.xml COPYONLY)
+endif()

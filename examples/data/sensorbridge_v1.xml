@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-authored sensorbridge config at schema v1, the kind of file an
+     operator edits in place. The XML mapping in one glance:
+       * the version carrier is the root <config> attribute — not an element,
+         so it can never collide with a config key;
+       * a `type` attribute marks non-string scalars (bool, int, double,
+         null); no attribute means string;
+       * an untyped element with children is an object; an array carries
+         type="array" and holds <item> children.
+     Comments like this one are dropped at parse time. -->
+<config version="1">
+  <device_name>bench-rig-07</device_name>
+  <poll_interval_ms type="int">250</poll_interval_ms>
+  <notes>calibrated 2026-06-30</notes>
+  <last_error type="null"/>
+  <sensors type="array">
+    <item>
+      <id>thermo-a</id>
+      <enabled type="bool">true</enabled>
+      <scale type="double">0.5</scale>
+    </item>
+    <item>
+      <id>thermo-b</id>
+      <enabled type="bool">false</enabled>
+      <scale type="double">2.5</scale>
+    </item>
+  </sensors>
+</config>
