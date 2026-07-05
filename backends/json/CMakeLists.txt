@@ -3,6 +3,8 @@ include(GNUInstallDirs)
 
 add_library(configmanager_json src/json_interface.cpp)
 add_library(configmanager::json ALIAS configmanager_json)
+# Installed consumers see the same configmanager::json name as the build tree.
+set_target_properties(configmanager_json PROPERTIES EXPORT_NAME json)
 
 target_include_directories(configmanager_json PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

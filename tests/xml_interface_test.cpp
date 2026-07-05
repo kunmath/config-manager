@@ -206,6 +206,14 @@ TEST(XmlInterfaceTest, CarrierAcceptsFullVersionIdRange) {
   EXPECT_EQ(max->version, 4294967295u);
 }
 
+TEST(XmlInterfaceTest, DuplicateVersionAttributeIsParseError) {
+  // pugixml accepts duplicate attribute names; the backend must not resolve
+  // them last-wins (§6.1: duplicates are never resolved).
+  auto loaded = loadText(R"(<config version="1" version="2"/>)");
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+}
+
 TEST(XmlInterfaceTest, VersionAttributeOnNonRootIsParseError) {
   auto loaded = loadText(
       R"(<config version="1"><a version="2" type="int">1</a></config>)");
@@ -437,7 +445,12 @@ TEST(XmlInterfaceTest, DoubleTextEdges) {
 // ---- Save-side restrictions (§6.1) ------------------------------------------------
 
 TEST(XmlInterfaceTest, InvalidElementNameFailsSaveWithSerializationError) {
-  for (const std::string& key : {"1bad", "bad key", "a:b", "-lead"}) {
+  // "\xC3\x97" is U+00D7 (multiplication sign), excluded from the XML
+  // NameStartChar production; "a\xE2\x80\xB0" ends in U+2030 (per mille),
+  // not a NameChar (regression: its low byte is 0x30, ASCII '0');
+  // "k\xFFy" is not valid UTF-8 at all.
+  for (const std::string& key : {"1bad", "bad key", "a:b", "-lead",
+                                 "\xC3\x97ratio", "a\xE2\x80\xB0", "k\xFFy"}) {
     const VersionedConfig config = makeConfig(
         1, ConfigValue::object().set(key, ConfigValue::of(std::int64_t{1})));
     std::ostringstream out;
@@ -446,6 +459,76 @@ TEST(XmlInterfaceTest, InvalidElementNameFailsSaveWithSerializationError) {
     ASSERT_FALSE(saved) << "accepted key: '" << key << "'";
     EXPECT_EQ(saved.error().code, ErrorCode::SerializationError)
         << "key: '" << key << "'";
+  }
+}
+
+TEST(XmlInterfaceTest, NonAsciiElementNameRoundTrips) {
+  // §6.1 admits every valid XML element name, not just ASCII: "caf\xC3\xA9"
+  // is "café" (é = U+00E9, a NameStartChar).
+  const VersionedConfig config = makeConfig(
+      1, ConfigValue::object().set("caf\xC3\xA9",
+                                   ConfigValue::of(std::int64_t{7})));
+  auto loaded = loadText(saveToText(config));
+  ASSERT_TRUE(loaded) << loaded.error().message;
+  EXPECT_EQ(loaded->model.get<std::int64_t>("caf\xC3\xA9").value(), 7);
+}
+
+TEST(XmlInterfaceTest, NonXmlNameElementFailsLoad) {
+  // pugixml admits any byte >= 0x80 in names; the backend must still reject
+  // names outside the XML Name production (else save() could not rewrite
+  // them): U+00D7 is not a name character, "a\xFF" is not valid UTF-8.
+  for (const std::string& document : {
+           std::string("<config version=\"1\"><\xC3\x97r>1</\xC3\x97r>"
+                       "</config>"),
+           std::string("<config version=\"1\"><a\xFF>1</a\xFF></config>"),
+       }) {
+    auto loaded = loadText(document);
+    ASSERT_FALSE(loaded) << "accepted document: " << document;
+    EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+  }
+}
+
+TEST(XmlInterfaceTest, Utf8StringRoundTrips) {
+  const std::string value = "h\xC3\xA9llo \xE4\xB8\x96\xE7\x95\x8C "
+                            "\xF0\x9F\x9A\x80";  // héllo 世界 🚀
+  const VersionedConfig config =
+      makeConfig(1, ConfigValue::object().set("s", ConfigValue::of(value)));
+  auto loaded = loadText(saveToText(config));
+  ASSERT_TRUE(loaded) << loaded.error().message;
+  EXPECT_EQ(loaded->model.get<std::string>("s").value(), value);
+}
+
+TEST(XmlInterfaceTest, InvalidUtf8StringFailsSave) {
+  // XML must be valid UTF-8: a stray continuation byte, a truncated
+  // sequence, an overlong encoding, and the non-character U+FFFF would all
+  // produce a document a conformant parser rejects.
+  for (const std::string& value :
+       {std::string("bad\xFF"), std::string("caf\xC3"),
+        std::string("over\xC0\xAFlong"), std::string("\xEF\xBF\xBF")}) {
+    const VersionedConfig config =
+        makeConfig(1, ConfigValue::object().set("s", ConfigValue::of(value)));
+    std::ostringstream out;
+    XmlInterface backend;
+    auto saved = backend.save(config, out);
+    ASSERT_FALSE(saved) << "accepted string: '" << value << "'";
+    EXPECT_EQ(saved.error().code, ErrorCode::SerializationError);
+  }
+}
+
+TEST(XmlInterfaceTest, UnrepresentableStringTextFailsLoad) {
+  // pugixml passes raw bytes and expanded character references through
+  // unvalidated; the backend must reject text save() could not rewrite:
+  // invalid UTF-8, a control character via reference, and a carriage
+  // return via reference (a literal CR would be normalized away, but
+  // &#13; survives expansion).
+  for (const std::string& document : {
+           std::string("<config version=\"1\"><s>ab\xFF</s></config>"),
+           std::string(R"(<config version="1"><s>a&#11;b</s></config>)"),
+           std::string(R"(<config version="1"><s>a&#13;b</s></config>)"),
+       }) {
+    auto loaded = loadText(document);
+    ASSERT_FALSE(loaded) << "accepted document: " << document;
+    EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
   }
 }
 

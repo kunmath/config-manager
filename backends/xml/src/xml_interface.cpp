@@ -48,34 +48,95 @@ bool isXmlWhitespace(std::string_view text) {
   return text.find_first_not_of(" \t\n\r") == std::string_view::npos;
 }
 
-bool isAsciiAlpha(char c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-}
-
 bool isAsciiDigit(char c) { return c >= '0' && c <= '9'; }
 
-// Conservative ASCII subset of the XML Name production (no ':', which would
-// imply namespaces; no non-ASCII name characters). Rejecting an exotic but
-// technically valid name only fails save(); accepting an invalid one would
-// emit a malformed document.
+// Strict UTF-8 decode of the code point starting at text[i]; advances i past
+// it. Overlong forms, surrogates, values above U+10FFFF, and truncated or
+// malformed sequences yield nullopt (i is left unspecified).
+std::optional<char32_t> decodeUtf8(std::string_view text, std::size_t& i) {
+  const unsigned char lead = static_cast<unsigned char>(text[i]);
+  if (lead < 0x80) {
+    ++i;
+    return lead;
+  }
+  std::size_t length = 0;
+  char32_t value = 0;
+  if ((lead & 0xE0) == 0xC0) {
+    length = 2;
+    value = lead & 0x1F;
+  } else if ((lead & 0xF0) == 0xE0) {
+    length = 3;
+    value = lead & 0x0F;
+  } else if ((lead & 0xF8) == 0xF0) {
+    length = 4;
+    value = lead & 0x07;
+  } else {
+    return std::nullopt;  // continuation byte as lead, or 0xF8-0xFF
+  }
+  if (i + length > text.size()) return std::nullopt;
+  for (std::size_t k = 1; k < length; ++k) {
+    const unsigned char cont = static_cast<unsigned char>(text[i + k]);
+    if ((cont & 0xC0) != 0x80) return std::nullopt;
+    value = (value << 6) | (cont & 0x3F);
+  }
+  constexpr char32_t kMinForLength[] = {0, 0, 0x80, 0x800, 0x10000};
+  if (value < kMinForLength[length]) return std::nullopt;       // overlong
+  if (value >= 0xD800 && value <= 0xDFFF) return std::nullopt;  // surrogate
+  if (value > 0x10FFFF) return std::nullopt;
+  i += length;
+  return value;
+}
+
+// XML 1.0 §2.3 NameStartChar, without ':' (a colon would imply namespaces,
+// which this restricted mapping does not model).
+bool isNameStartChar(char32_t c) {
+  return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+         (c >= 0xC0 && c <= 0xD6) || (c >= 0xD8 && c <= 0xF6) ||
+         (c >= 0xF8 && c <= 0x2FF) || (c >= 0x370 && c <= 0x37D) ||
+         (c >= 0x37F && c <= 0x1FFF) || (c >= 0x200C && c <= 0x200D) ||
+         (c >= 0x2070 && c <= 0x218F) || (c >= 0x2C00 && c <= 0x2FEF) ||
+         (c >= 0x3001 && c <= 0xD7FF) || (c >= 0xF900 && c <= 0xFDCF) ||
+         (c >= 0xFDF0 && c <= 0xFFFD) || (c >= 0x10000 && c <= 0xEFFFF);
+}
+
+bool isNameChar(char32_t c) {
+  return isNameStartChar(c) || c == '-' || c == '.' ||
+         (c >= '0' && c <= '9') || c == 0xB7 ||
+         (c >= 0x300 && c <= 0x36F) || (c >= 0x203F && c <= 0x2040);
+}
+
+// The XML 1.0 Name production over UTF-8 (minus ':'). Enforced symmetrically:
+// save() rejects model keys outside it (they would emit a malformed
+// document), and load() rejects element names outside it (pugixml's parser
+// is more permissive than the spec — it admits any byte >= 0x80 in names
+// unvalidated), so every document load() accepts can be re-saved.
 bool isValidElementName(std::string_view name) {
   if (name.empty()) return false;
-  if (!isAsciiAlpha(name.front()) && name.front() != '_') return false;
-  for (const char c : name.substr(1)) {
-    if (!isAsciiAlpha(c) && !isAsciiDigit(c) && c != '_' && c != '-') {
-      return false;
-    }
+  std::size_t i = 0;
+  bool first = true;
+  while (i < name.size()) {
+    const std::optional<char32_t> c = decodeUtf8(name, i);
+    if (!c) return false;
+    if (first ? !isNameStartChar(*c) : !isNameChar(*c)) return false;
+    first = false;
   }
   return true;
 }
 
-// XML 1.0 cannot express control characters below 0x20 other than tab and
-// newline: most are illegal even as character references, and a literal
-// carriage return never survives the mandatory line-ending normalization of
-// a conformant parse (pugixml's writer emits CR unescaped in text).
+// XML 1.0 carries only valid UTF-8 encoding the Char production: among the
+// C0 controls just tab and newline (a literal carriage return is also legal
+// but never survives the mandatory line-ending normalization of a conformant
+// parse), no U+FFFE/U+FFFF. Enforced symmetrically: save() rejects strings
+// outside it, and load() rejects text outside it (pugixml passes raw bytes
+// and expanded character references through unvalidated), so every string
+// load() accepts can be re-saved.
 bool isXmlRepresentable(std::string_view text) {
-  for (const unsigned char c : text) {
-    if (c < 0x20 && c != '\t' && c != '\n') return false;
+  std::size_t i = 0;
+  while (i < text.size()) {
+    const std::optional<char32_t> c = decodeUtf8(text, i);
+    if (!c) return false;
+    if (*c < 0x20 && *c != '\t' && *c != '\n') return false;
+    if (*c == 0xFFFE || *c == 0xFFFF) return false;
   }
   return true;
 }
@@ -145,6 +206,11 @@ Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element) {
                       "element name '" + key +
                           "' is not path-addressable (contains '.', '[', "
                           "or ']')");
+        }
+        if (!isValidElementName(key)) {
+          return fail(ErrorCode::ParseError,
+                      "element name '" + key +
+                          "' is not a valid XML name in this mapping");
         }
         for (const auto& member : object.members()) {
           if (member.first == key) {
@@ -279,6 +345,11 @@ Result<ConfigValue> parseValue(const pugi::xml_node& element) {
     Result<std::string> text = scalarText(element);
     if (!text) {
       return fail(text.error().code, std::move(text.error().message));
+    }
+    if (!isXmlRepresentable(*text)) {
+      return fail(ErrorCode::ParseError,
+                  "text of element '" + std::string(element.name()) +
+                      "' is not valid UTF-8 XML character data");
     }
     return ConfigValue::of(std::move(*text));
   }

@@ -31,6 +31,8 @@ add_library(configmanager_core
   src/migration_registry.cpp
   src/version_catalog.cpp)
 add_library(configmanager::core ALIAS configmanager_core)
+# Installed consumers see the same configmanager::core name as the build tree.
+set_target_properties(configmanager_core PROPERTIES EXPORT_NAME core)
 
 target_include_directories(configmanager_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -76,6 +78,15 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT ConfigManagerTargets
   NAMESPACE configmanager::
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ConfigManager)
+
+# The XML backend is self-contained when pugixml was fetched (compiled in
+# header-only, pugixml_SOURCE_DIR set); against a system pugixml it is a real
+# link dependency the installed package must resolve downstream.
+if(CONFIGMANAGER_BUILD_XML AND NOT pugixml_SOURCE_DIR)
+  set(CONFIGMANAGER_FIND_PUGIXML TRUE)
+else()
+  set(CONFIGMANAGER_FIND_PUGIXML FALSE)
+endif()
 
 configure_package_config_file(
   cmake/ConfigManagerConfig.cmake.in
