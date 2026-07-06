@@ -6,7 +6,7 @@
 // so swapping JSON for XML changes only the two functions that touch bytes.
 // What is new here is everything XML-specific:
 //
-//   * the wire mapping (HighLevelDesign.md §6.1): elements only; a `type`
+//   * the wire mapping (docs/HighLevelDesign.md §6.1): elements only; a `type`
 //     attribute marks non-string scalars (absent means string); objects are
 //     untyped elements with children; arrays carry type="array" and hold
 //     <item> children;

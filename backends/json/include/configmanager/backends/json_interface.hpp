@@ -5,7 +5,7 @@
 
 namespace configmanager {
 
-// JSON backend (HighLevelDesign.md §6.1): native 1:1 mapping via
+// JSON backend (docs/HighLevelDesign.md §6.1): native 1:1 mapping via
 // nlohmann::ordered_json, preserving member insertion order end-to-end
 // (ADR-022). The version carrier is the top-level "__version" field; it must
 // be a native unquoted unsigned integer representable in VersionId, anything

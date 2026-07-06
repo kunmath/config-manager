@@ -10,6 +10,9 @@ All examples include only the umbrella header `configmanager/configmanager.hpp`
 (which defines the `cfg` namespace alias); 03 additionally includes the JSON
 backend header and 04 the XML backend header.
 
+New to the library? The [tutorial](../docs/tutorial.md) walks through examples
+01–03 in prose; the rest of the guides live in [`docs/`](../docs/README.md).
+
 ## 01_basic_model — the model is a typed tree, errors are values
 
 Core only, no versioning or I/O. Builds a `ConfigValue` tree, adopts it into

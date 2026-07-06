@@ -1,4 +1,4 @@
-# XML serialization backend (HighLevelDesign.md §6.1): configmanager::xml.
+# XML serialization backend (docs/HighLevelDesign.md §6.1): configmanager::xml.
 include(GNUInstallDirs)
 
 add_library(configmanager_xml src/xml_interface.cpp)

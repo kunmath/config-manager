@@ -1,5 +1,5 @@
 # Dependency acquisition: prefer a system/find_package copy, otherwise fetch
-# and build as part of this build (HighLevelDesign.md §11.1). Pinned tags:
+# and build as part of this build (docs/HighLevelDesign.md §11.1). Pinned tags:
 #   tl-expected v1.1.0, nlohmann/json v3.11.3, pugixml v1.14,
 #   googletest v1.14.0
 include(FetchContent)
