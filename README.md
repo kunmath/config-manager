@@ -187,6 +187,12 @@ Design rationale lives in [docs/Architecture.md](docs/Architecture.md)
 (concrete types, format mappings, error-code table). The guides link into both
 rather than restating them.
 
+## Contributing
+
+Ideas, bug reports, docs, and code are all welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md). The YAML and INI backends are specified
+but unclaimed, if you want a self-contained place to start.
+
 ## License
 
 [MIT](LICENSE)
