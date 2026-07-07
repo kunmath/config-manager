@@ -1,7 +1,7 @@
 #ifndef CONFIGMANAGER_SRC_NODE_ARENA_HPP_
 #define CONFIGMANAGER_SRC_NODE_ARENA_HPP_
 
-// Internal storage for ConfigModel (HighLevelDesign.md §4.2). Not installed:
+// Internal storage for ConfigModel (docs/HighLevelDesign.md §4.2). Not installed:
 // public headers see NodeArena only as a forward declaration, so the storage
 // layout can change without touching the API surface.
 

@@ -1,4 +1,4 @@
-# JSON serialization backend (HighLevelDesign.md §6.1): configmanager::json.
+# JSON serialization backend (docs/HighLevelDesign.md §6.1): configmanager::json.
 include(GNUInstallDirs)
 
 add_library(configmanager_json src/json_interface.cpp)

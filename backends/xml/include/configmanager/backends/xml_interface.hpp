@@ -5,7 +5,7 @@
 
 namespace configmanager {
 
-// XML backend (HighLevelDesign.md §6.1): restricted, elements-only mapping
+// XML backend (docs/HighLevelDesign.md §6.1): restricted, elements-only mapping
 // over pugixml, preserving member order end-to-end (ADR-022). The document
 // root is <config version="N">; the carrier is a root *attribute*, outside
 // the model's key space, so save()'s reserved-carrier check is vacuous

@@ -8,7 +8,7 @@
 
 namespace configmanager {
 
-// Serialization boundary (HighLevelDesign.md §6). Backends only parse and
+// Serialization boundary (docs/HighLevelDesign.md §6). Backends only parse and
 // serialize: load() never repairs or migrates (ADR-013). The version is
 // mandatory — a stream without version metadata fails load() with
 // InvalidVersion (ADR-014) — and the format's version carrier is reserved

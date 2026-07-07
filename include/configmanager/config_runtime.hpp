@@ -27,7 +27,7 @@ struct SyncState {
   SyncStatus status;
 };
 
-// The orchestrator (HighLevelDesign.md §9): validating construction,
+// The orchestrator (docs/HighLevelDesign.md §9): validating construction,
 // inspection, and the single transactional synchronize() pipeline
 // (clone -> migrate -> repair -> single commit, ADR-009).
 class ConfigRuntime {

@@ -42,7 +42,7 @@ struct MigrationEdge {
   MigrationFn apply;
 };
 
-// Migration edge store (HighLevelDesign.md §8.1). Registration keeps only the
+// Migration edge store (docs/HighLevelDesign.md §8.1). Registration keeps only the
 // checks that need no catalog (duplicate edge, empty callable); adjacency and
 // completeness are validate()'s job, since the catalog may still be growing
 // while edges are registered.

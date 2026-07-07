@@ -17,7 +17,7 @@ namespace configmanager {
 
 class NodeArena;  // internal storage (src/node_arena.hpp)
 
-// Owning configuration tree (HighLevelDesign.md §4.4). The root is always an
+// Owning configuration tree (docs/HighLevelDesign.md §4.4). The root is always an
 // Object (ADR-020). Move-only: the model owns a heap arena that ConfigNode
 // handles reference, so moving the model keeps every handle valid, while
 // destroying it (or move-assigning onto it) invalidates them undetectably.

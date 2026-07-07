@@ -9,7 +9,7 @@
 
 namespace configmanager {
 
-// Stepwise forward migration walker (HighLevelDesign.md §8.2). Stateless and
+// Stepwise forward migration walker (docs/HighLevelDesign.md §8.2). Stateless and
 // cheap: holds references only, so construct one over a catalog/registry pair
 // per use and let it go out of scope.
 //

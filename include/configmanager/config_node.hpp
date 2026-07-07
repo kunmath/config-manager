@@ -33,7 +33,7 @@ bool fitsInt(std::int64_t value) {
   }
 }
 
-// Strict, lossless-only scalar conversion (HighLevelDesign.md §4.4): Int and
+// Strict, lossless-only scalar conversion (docs/HighLevelDesign.md §4.4): Int and
 // Double interconvert only when the exact value survives the round trip;
 // Bool and String never convert; values are never stringified and strings
 // are never parsed. Everything else is InvalidType.
@@ -121,7 +121,7 @@ Result<T> convertScalar(const Scalar& scalar) {
 }  // namespace detail
 
 // Lightweight read-only handle into a ConfigModel's node arena
-// (HighLevelDesign.md §4.3). Handles survive moves of the owning ConfigModel
+// (docs/HighLevelDesign.md §4.3). Handles survive moves of the owning ConfigModel
 // (they reference the heap arena, never the model object) and are detectably
 // invalidated when their node is removed. Destroying the owning model —
 // including move-assigning onto it — invalidates handles *undetectably*: no

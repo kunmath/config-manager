@@ -9,7 +9,7 @@
 
 namespace configmanager {
 
-// Version metadata and default factories (HighLevelDesign.md §7). Knows
+// Version metadata and default factories (docs/HighLevelDesign.md §7). Knows
 // nothing about migrations (ADR-012).
 //
 // The catalog is the single source of version ordering and adjacency:
