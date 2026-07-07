@@ -17,5 +17,10 @@ if(CONFIGMANAGER_BUILD_JSON)
   target_link_libraries(configmanager_tests PRIVATE configmanager::json)
 endif()
 
+if(CONFIGMANAGER_BUILD_XML)
+  target_sources(configmanager_tests PRIVATE xml_interface_test.cpp)
+  target_link_libraries(configmanager_tests PRIVATE configmanager::xml)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(configmanager_tests)

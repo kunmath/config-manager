@@ -7,8 +7,8 @@ step behaved as documented, so the examples double as smoke tests and run in
 CI.
 
 All examples include only the umbrella header `configmanager/configmanager.hpp`
-(which defines the `cfg` namespace alias); the capstone additionally includes
-the JSON backend header.
+(which defines the `cfg` namespace alias); 03 additionally includes the JSON
+backend header and 04 the XML backend header.
 
 ## 01_basic_model — the model is a typed tree, errors are values
 
@@ -54,6 +54,33 @@ Usage: `03_relaygate_lifecycle [data_dir] [out_dir]` (defaults `./data`,
 `./out`; CTest runs it from the build-tree `examples/` directory where
 `data/` is copied).
 
+## 04_sensorbridge_xml — the XML backend end-to-end, on a real file
+
+Requires the XML backend (`CONFIGMANAGER_BUILD_XML=ON`; the example is
+skipped otherwise). "sensorbridge" is a fictional telemetry poller whose
+config lives in XML. The runtime plumbing is the same as 02/03 — swapping
+backends changes only the code that touches bytes — so this example spends
+its phases on what is XML-specific:
+
+* **the wire mapping** — loads the hand-authored `data/sensorbridge_v1.xml`
+  (open it next to the code): elements only, a `type` attribute for
+  non-string scalars (`bool`/`int`/`double`/`null`, absent means string),
+  untyped elements with children as objects, `type="array"` with `<item>`
+  children as arrays;
+* **an upgrade over XML** — `synchronize()` walks v1→v2 (operator overrides
+  survive the migration, the new `polling.jitter_pct` is repaired in) and
+  the saved document's root attribute becomes `<config version="2">`;
+* **the carrier is an attribute, not a member** — unlike JSON's
+  `"__version"`, a config key literally named `version` is plain data and
+  round-trips;
+* **save-side name validation** — a model key XML cannot spell (`2fast`)
+  fails `save()` with a `SerializationError` *value*, writing nothing;
+* **order preservation (ADR-022)** — `load(save(x))` re-serializes
+  byte-identically, so a load/save cycle never shuffles the operator's file.
+
+Usage: `04_sensorbridge_xml [data_dir] [out_dir]` (defaults `./data`,
+`./out`, same convention as 03).
+
 ## Building and running
 
 Examples build by default (`CONFIGMANAGER_BUILD_EXAMPLES=ON`) and register
@@ -66,6 +93,6 @@ cmake --build build --parallel
 # run just the examples
 ctest --test-dir build --output-on-failure -R '^examples\.'
 
-# or run a binary directly (03 wants to be run from build/examples/)
-cd build/examples && ./03_relaygate_lifecycle
+# or run a binary directly (03/04 want to be run from build/examples/)
+cd build/examples && ./04_sensorbridge_xml
 ```
