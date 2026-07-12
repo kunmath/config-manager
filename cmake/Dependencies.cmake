@@ -69,6 +69,10 @@ if(CONFIGMANAGER_BUILD_TESTS)
         "CONFIGMANAGER_USE_SYSTEM_DEPS is ON but GTest was not found "
         "via find_package")
     endif()
+    # A fetched GoogleTest must not ship with this project's install: its
+    # install rules default to ON and would add GTest/GMock headers,
+    # libraries and CMake packages to the install tree.
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(googletest
       GIT_REPOSITORY https://github.com/google/googletest.git
       GIT_TAG        v1.14.0)

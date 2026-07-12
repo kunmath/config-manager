@@ -1,5 +1,6 @@
 #include "configmanager/backends/json_interface.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <sstream>
@@ -321,6 +322,69 @@ TEST(JsonInterfaceTest, InvalidUtf8StringFailsSaveWithSerializationError) {
   const VersionedConfig config = makeConfig(
       1, ConfigValue::object().set("s", ConfigValue::of(std::string(
                                             "\xFF\xFE invalid utf-8"))));
+  std::ostringstream out;
+  JsonInterface backend;
+  auto saved = backend.save(config, out);
+  ASSERT_FALSE(saved);
+  EXPECT_EQ(saved.error().code, ErrorCode::SerializationError);
+}
+
+// {"a": {"a": ... 1 ...}} with `wraps` nested objects: placed as the value
+// of a root member, the innermost scalar sits at depth wraps + 1.
+std::string nestedObjectDocument(std::size_t wraps) {
+  std::string document = R"({"__version": 1, "a": )";
+  for (std::size_t i = 0; i < wraps; ++i) {
+    document += R"({"a": )";
+  }
+  document += "1";
+  document.append(wraps, '}');
+  document += "}";
+  return document;
+}
+
+TEST(JsonInterfaceTest, DocumentBeyondMaxTreeDepthIsParseError) {
+  auto loaded = loadText(nestedObjectDocument(kMaxTreeDepth));
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+  EXPECT_NE(loaded.error().message.find("nesting depth"), std::string::npos);
+}
+
+TEST(JsonInterfaceTest, DocumentAtMaxTreeDepthLoads) {
+  auto loaded = loadText(nestedObjectDocument(kMaxTreeDepth - 1));
+  ASSERT_TRUE(loaded) << loaded.error().message;
+}
+
+TEST(JsonInterfaceTest, DeepArrayNestingIsParseError) {
+  std::string document = R"({"__version": 1, "a": )";
+  document.append(kMaxTreeDepth + 1, '[');
+  document.append(kMaxTreeDepth + 1, ']');
+  document += "}";
+  auto loaded = loadText(document);
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+}
+
+TEST(JsonInterfaceTest, NonFiniteDoubleFailsSaveWithSerializationError) {
+  const double nonFinite[] = {std::numeric_limits<double>::infinity(),
+                              -std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()};
+  for (const double value : nonFinite) {
+    const VersionedConfig config = makeConfig(
+        1, ConfigValue::object().set("d", ConfigValue::of(value)));
+    std::ostringstream out;
+    JsonInterface backend;
+    auto saved = backend.save(config, out);
+    ASSERT_FALSE(saved);
+    EXPECT_EQ(saved.error().code, ErrorCode::SerializationError);
+    EXPECT_NE(saved.error().message.find("'d'"), std::string::npos);
+  }
+}
+
+TEST(JsonInterfaceTest, NonFiniteDoubleInArrayFailsSave) {
+  const VersionedConfig config = makeConfig(
+      1, ConfigValue::object().set(
+             "a", ConfigValue::array().push(ConfigValue::of(
+                      std::numeric_limits<double>::infinity()))));
   std::ostringstream out;
   JsonInterface backend;
   auto saved = backend.save(config, out);

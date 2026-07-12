@@ -2,6 +2,7 @@
 #define CONFIGMANAGER_CONFIG_NODE_HPP_
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -95,6 +96,20 @@ Result<T> convertScalar(const Scalar& scalar) {
     return fail(ErrorCode::InvalidType, "scalar does not hold a number");
   } else {  // floating point
     if (const double* value = std::get_if<double>(&scalar)) {
+      if constexpr (std::is_same_v<T, double>) {
+        return *value;  // identity, including NaN and infinities
+      }
+      if (std::isnan(*value)) {
+        return static_cast<T>(*value);  // NaN converts to NaN losslessly
+      }
+      // Out-of-range finite values must not reach the cast: narrowing a
+      // double outside T's finite range is undefined behavior.
+      if (std::isfinite(*value) &&
+          (*value < static_cast<double>(std::numeric_limits<T>::lowest()) ||
+           *value > static_cast<double>(std::numeric_limits<T>::max()))) {
+        return fail(ErrorCode::InvalidType,
+                    "Double value is outside the requested type's range");
+      }
       const T narrowed = static_cast<T>(*value);
       if (static_cast<double>(narrowed) == *value) {
         return narrowed;

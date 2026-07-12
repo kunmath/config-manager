@@ -1,5 +1,6 @@
 #include "configmanager/config_model.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -387,6 +388,57 @@ TEST(ConfigModelTest, CloneIsIndependentDeepCopy) {
   EXPECT_EQ(copy.get<std::int64_t>("a.b").value(), 1);
   ASSERT_TRUE(copy.set("c", 3));
   EXPECT_FALSE(model.contains("c"));
+}
+
+// ---- Maximum nesting depth (HLD §4.4) --------------------------------------------
+
+// A value tree whose deepest node sits `wraps` levels below its root.
+ConfigValue nestedValue(std::size_t wraps) {
+  ConfigValue value = ConfigValue::of(1);
+  for (std::size_t i = 0; i < wraps; ++i) {
+    ConfigValue wrapper = ConfigValue::object();
+    wrapper.set("a", std::move(value));
+    value = std::move(wrapper);
+  }
+  return value;
+}
+
+TEST(ConfigModelTest, FromValueAcceptsExactlyMaxTreeDepth) {
+  auto model = ConfigModel::fromValue(nestedValue(kMaxTreeDepth));
+  ASSERT_TRUE(model) << model.error().message;
+}
+
+TEST(ConfigModelTest, FromValueBeyondMaxTreeDepthIsInvalidPath) {
+  auto model = ConfigModel::fromValue(nestedValue(kMaxTreeDepth + 1));
+  ASSERT_FALSE(model);
+  EXPECT_EQ(model.error().code, ErrorCode::InvalidPath);
+}
+
+TEST(ConfigModelTest, SetCountsPathDepthAgainstMaxTreeDepth) {
+  ConfigModel model;
+  // The subtree's root would sit at depth 1, pushing its deepest node one
+  // past the limit.
+  auto tooDeep = model.set("x", nestedValue(kMaxTreeDepth));
+  ASSERT_FALSE(tooDeep);
+  EXPECT_EQ(tooDeep.error().code, ErrorCode::InvalidPath);
+  EXPECT_FALSE(model.contains("x"));  // failed writes stay atomic
+
+  ASSERT_TRUE(model.set("x", nestedValue(kMaxTreeDepth - 1)));
+}
+
+TEST(ConfigModelTest, DeepPathWritesRespectMaxTreeDepth) {
+  std::string path = "a";
+  for (std::size_t i = 1; i < kMaxTreeDepth; ++i) {
+    path += ".a";
+  }
+  // kMaxTreeDepth segments: the scalar lands exactly at the limit.
+  ConfigModel model;
+  ASSERT_TRUE(model.set(path, 1));
+
+  ConfigModel deeper;
+  auto tooDeep = deeper.set(path + ".a", 1);
+  ASSERT_FALSE(tooDeep);
+  EXPECT_EQ(tooDeep.error().code, ErrorCode::InvalidPath);
 }
 
 // ---- VersionedConfig (HLD §5) ---------------------------------------------------

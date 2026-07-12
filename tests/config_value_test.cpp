@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include <gtest/gtest.h>
 
@@ -45,6 +46,16 @@ TEST(ConfigValueTest, OfString) {
   auto value = ConfigValue::of(std::string("hello"));
   EXPECT_EQ(value.type(), NodeType::String);
   EXPECT_EQ(std::get<std::string>(value.scalar()), "hello");
+}
+
+TEST(ConfigValueTest, OfStringViewAndCString) {
+  auto fromView = ConfigValue::of(std::string_view("view"));
+  EXPECT_EQ(fromView.type(), NodeType::String);
+  EXPECT_EQ(std::get<std::string>(fromView.scalar()), "view");
+
+  auto fromLiteral = ConfigValue::of("literal");
+  EXPECT_EQ(fromLiteral.type(), NodeType::String);
+  EXPECT_EQ(std::get<std::string>(fromLiteral.scalar()), "literal");
 }
 
 TEST(ConfigValueTest, ObjectMembersKeepInsertionOrder) {

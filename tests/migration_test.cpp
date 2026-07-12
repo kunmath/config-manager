@@ -2,6 +2,7 @@
 #include "configmanager/migration_registry.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -196,6 +197,43 @@ TEST(MigrationEngineTest, ThrowingMigrationIsMigrationFailed) {
   EXPECT_EQ(outcome.error().code, ErrorCode::MigrationFailed);
   EXPECT_NE(outcome.error().message.find("kaput"), std::string::npos);
   EXPECT_EQ(config.version, 1u);  // failed step never advanced the version
+}
+
+// A callable whose copy constructor throws once armed. The engine copies the
+// registered std::function before invoking it; that copy runs user code and
+// must map to MigrationFailed like any other callback exception (ADR-018).
+class CopyBombMigration {
+ public:
+  explicit CopyBombMigration(std::shared_ptr<bool> armed)
+      : armed_(std::move(armed)) {}
+  CopyBombMigration(const CopyBombMigration& other) : armed_(other.armed_) {
+    if (*armed_) {
+      throw std::runtime_error("copy bomb");
+    }
+  }
+  CopyBombMigration(CopyBombMigration&&) = default;
+
+  Result<void> operator()(MigrationContext&) const { return {}; }
+
+ private:
+  std::shared_ptr<bool> armed_;
+};
+
+TEST(MigrationEngineTest, ThrowingCopyConstructorIsMigrationFailed) {
+  VersionCatalog catalog = makeCatalog({1, 2});
+  MigrationRegistry registry;
+  auto armed = std::make_shared<bool>(false);
+  ASSERT_TRUE(registry.registerMigration(
+      1, 2, MigrationFn(CopyBombMigration(armed))));
+  *armed = true;  // registration is done; the next copy is the engine's
+
+  VersionedConfig config{1, ConfigModel()};
+  MigrationEngine engine(catalog, registry);
+  auto outcome = engine.migrate(config, 2);
+  ASSERT_FALSE(outcome);
+  EXPECT_EQ(outcome.error().code, ErrorCode::MigrationFailed);
+  EXPECT_NE(outcome.error().message.find("copy bomb"), std::string::npos);
+  EXPECT_EQ(config.version, 1u);
 }
 
 TEST(MigrationEngineTest, ReturnedErrorWrappedWithDiagnosticPreserved) {

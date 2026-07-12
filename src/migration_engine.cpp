@@ -62,12 +62,13 @@ Result<void> MigrationEngine::migrate(VersionedConfig& config,
     }
     // Built per step; only the engine may construct contexts (§8.1).
     MigrationContext ctx(config.model, current, *next);
-    // Copied out of the registry: a migration that (perversely) registers
-    // new edges would reallocate the registry's storage and destroy the
-    // std::function mid-execution.
-    const MigrationFn apply = (*edge)->apply;
     Result<void> applied;
     try {
+      // Copied out of the registry: a migration that (perversely) registers
+      // new edges would reallocate the registry's storage and destroy the
+      // std::function mid-execution. The copy itself runs user code (the
+      // callable's copy constructor), so it stays inside the try (ADR-018).
+      const MigrationFn apply = (*edge)->apply;
       applied = apply(ctx);
     } catch (const std::bad_alloc&) {
       throw;  // memory exhaustion is not a recoverable config error (ADR-018)

@@ -5,7 +5,9 @@
 // public headers see NodeArena only as a forward declaration, so the storage
 // layout can change without touching the API surface.
 
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -33,6 +35,15 @@ struct Node {
 // the old generation is detectably stale.
 class NodeArena {
  public:
+  NodeArena() = default;
+  // Copies (clone()) must re-establish the release() capacity invariant
+  // below: a copied vector's capacity is only its size.
+  NodeArena(const NodeArena& other)
+      : nodes_(other.nodes_), freeList_(other.freeList_) {
+    freeList_.reserve(nodes_.size());
+  }
+  NodeArena& operator=(const NodeArena&) = delete;
+
   NodeId allocate(NodeType type) {
     if (!freeList_.empty()) {
       // The generation was already bumped by release(), so every handle
@@ -46,6 +57,14 @@ class NodeArena {
       node.alive = true;
       return id;
     }
+    // Keep freeList_'s capacity at least the node count, so release() never
+    // allocates: freeing must be non-throwing or a std::bad_alloc mid-free
+    // could leave a node half-emptied, breaking the atomic-write guarantee
+    // (ADR-019).
+    if (freeList_.capacity() < nodes_.size() + 1) {
+      freeList_.reserve(std::max<std::size_t>(nodes_.size() + 1,
+                                              2 * freeList_.capacity()));
+    }
     Node node;
     node.type = type;
     node.alive = true;
@@ -53,7 +72,7 @@ class NodeArena {
     return static_cast<NodeId>(nodes_.size() - 1);
   }
 
-  void release(NodeId id) {
+  void release(NodeId id) noexcept {
     Node& node = nodes_[id];
     assert(node.alive && "NodeArena::release requires a live node");
     node.alive = false;

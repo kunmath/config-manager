@@ -8,4 +8,17 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ConfigManagerTargets.cmake")
 
+# Component discovery for find_package(ConfigManager COMPONENTS ...):
+# check_required_components() consults ConfigManager_<comp>_FOUND, which
+# must be defined here — a component is present exactly when its target
+# was installed.
+foreach(_configmanager_comp core json xml)
+  if(TARGET configmanager::${_configmanager_comp})
+    set(ConfigManager_${_configmanager_comp}_FOUND TRUE)
+  else()
+    set(ConfigManager_${_configmanager_comp}_FOUND FALSE)
+  endif()
+endforeach()
+unset(_configmanager_comp)
+
 check_required_components(ConfigManager)

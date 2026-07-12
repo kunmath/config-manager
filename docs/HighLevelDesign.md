@@ -396,6 +396,15 @@ Key behaviors:
   that is not path-addressable — empty, or containing a reserved path
   character — with `InvalidPath` (ADR-021); the subtree `set` overload
   applies the same key check to the inserted value.
+* Tree depth is **bounded by `kMaxTreeDepth` (128)**, the root object at
+  depth 0. Several operations — subtree writes, extraction, destruction,
+  repair, backend serialization — recurse over the tree, so depth must be
+  bounded for them to be stack-safe. `fromValue` and the subtree `set` reject
+  deeper values with `InvalidPath` (for `set`, the inserted value's depth is
+  offset by the target path's segment count); backends reject deeper
+  persisted documents with `ParseError` before they reach a model. The
+  checks run while descending, so validation itself never recurses past the
+  limit even on a hostile input.
 * `clone()` provides the deep copy that `ConfigRuntime::synchronize` runs on.
 
 ### 4.5 ConfigPath (`config_path.hpp`)
