@@ -36,10 +36,8 @@ class MigrationEngine {
   // reported as MigrationFailed with the step and original diagnostic in the
   // message.
   //
-  // Migration functions run through the registry's stored callables (state
-  // persists across steps and runs) and must not mutate the registry —
-  // registering an edge from inside a migration can destroy the running
-  // callable (see MigrationRegistry::registerMigration).
+  // Migration functions run through the registry's stored callables, so
+  // state persists across steps and runs.
   Result<void> migrate(VersionedConfig& config, VersionId target);
 
  private:

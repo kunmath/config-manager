@@ -65,10 +65,7 @@ Result<void> MigrationEngine::migrate(VersionedConfig& config,
     Result<void> applied;
     try {
       // Invoked through the registry's stored callable (§8.2), so a stateful
-      // callback keeps its state across steps and runs. Consequently a
-      // migration must not register new edges mid-execution: that would
-      // reallocate the registry's storage and destroy the running callable
-      // (registerMigration documents the pointer invalidation).
+      // callback keeps its state across steps and runs.
       applied = ((*edge)->apply)(ctx);
     } catch (const std::bad_alloc&) {
       throw;  // memory exhaustion is not a recoverable config error (ADR-018)

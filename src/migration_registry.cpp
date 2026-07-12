@@ -47,11 +47,8 @@ Result<const MigrationEdge*> MigrationRegistry::findMigration(
 }
 
 Result<void> MigrationRegistry::validate(const VersionCatalog& catalog) const {
-  // Rules 3 and 4: endpoints exist, and every edge is catalog-adjacent.
-  // Adjacency subsumes duplicate detection (rule 2) together with
-  // registration's own duplicate check, but the rule is cheap to enforce
-  // directly, so validate() stays correct even if edges_ was populated some
-  // other way in the future.
+  // Rules 2 and 3: endpoints exist, and every edge is catalog-adjacent.
+  // Duplicates need no re-check here: registration rejects them.
   for (const MigrationEdge& edge : edges_) {
     if (!catalog.contains(edge.from) || !catalog.contains(edge.to)) {
       return fail(ErrorCode::InvalidVersion,
@@ -65,18 +62,8 @@ Result<void> MigrationRegistry::validate(const VersionCatalog& catalog) const {
                       " is not adjacent in catalog order");
     }
   }
-  for (auto first = edges_.begin(); first != edges_.end(); ++first) {
-    const auto dup =
-        std::find_if(first + 1, edges_.end(), [&](const MigrationEdge& e) {
-          return e.from == first->from && e.to == first->to;
-        });
-    if (dup != edges_.end()) {
-      return fail(ErrorCode::InvalidVersion,
-                  "duplicate migration " + edgeName(first->from, first->to));
-    }
-  }
   // Rule 1: the chain is complete from every version up to the latest.
-  const std::vector<VersionId>& versions = catalog.versions();
+  const std::vector<VersionId> versions = catalog.versions();
   for (std::size_t i = 0; i + 1 < versions.size(); ++i) {
     const VersionId from = versions[i];
     const VersionId to = versions[i + 1];

@@ -470,8 +470,8 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
   if (!isValidElementName(name)) {
     return fail(ErrorCode::SerializationError,
                 "model key '" + name +
-                    "' is not a valid XML element name (this backend admits "
-                    "ASCII names matching [A-Za-z_][A-Za-z0-9_-]*)");
+                    "' is not a valid XML element name (XML 1.0 Name "
+                    "production, ':' excluded)");
   }
   pugi::xml_node element = appendNamedChild(parent, name.c_str());
   switch (node.type()) {

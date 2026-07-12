@@ -3,7 +3,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <string_view>
 #include <type_traits>
@@ -71,30 +70,15 @@ class ConfigModel {
   Result<ConfigValue> getValue(std::string_view path) const;
 
   // Scalar upsert. Constrained to exclude ConfigValue so subtree insertion
-  // unambiguously selects the ConfigValue overload. Int is stored as
-  // std::int64_t (§4.4): an unsigned value that does not fit fails with
-  // InvalidType rather than silently wrapping, and a null C string fails
-  // with InvalidType too — both are checked here, before ConfigValue::of,
-  // whose throwing preconditions must not escape the Result API.
+  // unambiguously selects the ConfigValue overload. ConfigValue::of's
+  // preconditions are checked first and fail with InvalidType, so its throw
+  // never crosses the Result API.
   template <typename T,
             typename = std::enable_if_t<
                 !std::is_same_v<std::decay_t<T>, ConfigValue>>>
   Result<void> set(std::string_view path, T value) {
-    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool> &&
-                  std::is_unsigned_v<T>) {
-      if (static_cast<std::uint64_t>(value) >
-          static_cast<std::uint64_t>(
-              std::numeric_limits<std::int64_t>::max())) {
-        return fail(ErrorCode::InvalidType,
-                    "unsigned integer value is not representable as Int "
-                    "(std::int64_t)");
-      }
-    }
-    if constexpr (std::is_pointer_v<T>) {
-      if (value == nullptr) {
-        return fail(ErrorCode::InvalidType,
-                    "null C string is not a valid String value");
-      }
+    if (const char* violation = ConfigValue::ofPreconditionViolation(value)) {
+      return fail(ErrorCode::InvalidType, violation);
     }
     return set(path, ConfigValue::of(std::move(value)));
   }

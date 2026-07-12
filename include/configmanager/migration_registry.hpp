@@ -1,8 +1,8 @@
 #ifndef CONFIGMANAGER_MIGRATION_REGISTRY_HPP_
 #define CONFIGMANAGER_MIGRATION_REGISTRY_HPP_
 
+#include <deque>
 #include <functional>
-#include <vector>
 
 #include "configmanager/config_model.hpp"
 #include "configmanager/result.hpp"
@@ -51,29 +51,26 @@ class MigrationRegistry {
   // Duplicate (from,to) -> InvalidVersion. An empty MigrationFn is a
   // registration error, surfaced immediately with MigrationFailed rather
   // than at first execution.
-  //
-  // Must not be called while MigrationEngine::migrate() is executing over
-  // this registry — including from inside a migration function: the engine
-  // invokes the stored callable in place, and registration may reallocate
-  // the edge storage and destroy it mid-execution (undefined behavior).
   Result<void> registerMigration(VersionId from, VersionId to, MigrationFn fn);
 
-  // Absent edge -> MissingMigration. The pointer stays valid until the next
-  // registerMigration.
+  // Absent edge -> MissingMigration. Edges are never removed and their
+  // storage keeps references stable, so the pointer stays valid until the
+  // registry is assigned to or destroyed.
   Result<const MigrationEdge*> findMigration(VersionId from,
                                              VersionId to) const;
 
   // Validates against the catalog (called by ConfigRuntime::create):
   //   1. every registered version below the latest has an edge to the next
   //      registered version (else MissingMigration);
-  //   2. no duplicate (from,to) edges (enforced at registration);
-  //   3. all edge endpoints exist in the catalog (else InvalidVersion);
-  //   4. only adjacent edges, adjacency in catalog order (else
+  //   2. all edge endpoints exist in the catalog (else InvalidVersion);
+  //   3. only adjacent edges, adjacency in catalog order (else
   //      InvalidVersion).
   Result<void> validate(const VersionCatalog& catalog) const;
 
  private:
-  std::vector<MigrationEdge> edges_;
+  // deque: stable element references, so the engine can keep invoking a
+  // stored callable while registration appends.
+  std::deque<MigrationEdge> edges_;
 };
 
 }  // namespace configmanager

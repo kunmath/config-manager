@@ -38,13 +38,14 @@ class VersionCatalog {
   // MigrationFailed (ADR-018).
   Result<ConfigModel> createDefault(VersionId v) const;
 
-  // Ordered ascending; used by registry validation.
-  const std::vector<VersionId>& versions() const noexcept { return versions_; }
+  // Registered versions, ordered ascending; built per call (used by registry
+  // validation).
+  std::vector<VersionId> versions() const;
 
  private:
-  // versions_ is kept sorted; factories_[i] belongs to versions_[i].
-  std::vector<VersionId> versions_;
-  std::vector<DefaultFactory> factories_;
+  // One record per version keeps the id and its factory inseparable, so
+  // registration is a single insertion.
+  std::vector<VersionArtifact> entries_;  // sorted ascending by version
 };
 
 }  // namespace configmanager

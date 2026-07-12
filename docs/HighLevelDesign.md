@@ -245,9 +245,10 @@ struct Node {
 
 class NodeArena {
     std::vector<Node>          nodes_;
-    std::vector<NodeId>        freeList_;
-    // allocate(): reuse a free slot (bump generation) or append
-    // free(node): mark dead, bump generation, return slot to freeList_
+    NodeId                     freeHead_;  // intrusive free list: dead nodes
+                                           // chain through their parent field
+    // allocate(): reuse the free-list head (generation already bumped) or append
+    // free(node): mark dead, bump generation, chain the slot onto the free list
 };
 ```
 
@@ -617,8 +618,8 @@ public:
     Result<VersionId>   nextVersion(VersionId v) const;      // next registered version
     Result<ConfigModel> createDefault(VersionId v) const;    // factory ConfigValue -> fromValue
 
-    // ordered ascending; used by registry validation
-    const std::vector<VersionId>& versions() const noexcept;
+    // ordered ascending, built per call; used by registry validation
+    std::vector<VersionId> versions() const;
 };
 ```
 
@@ -686,10 +687,12 @@ public:
 
 1. Every registered version below the latest has a migration to the next
    registered version.
-2. No duplicate `(from,to)` edges.
-3. All edge endpoints exist in the catalog.
-4. Only adjacent edges (`to == catalog.nextVersion(from)`) are registered.
+2. All edge endpoints exist in the catalog.
+3. Only adjacent edges (`to == catalog.nextVersion(from)`) are registered.
    Adjacency is catalog order, not numeric `+1`.
+
+Duplicate `(from,to)` edges need no re-check here: `registerMigration`
+rejects them at registration.
 
 Failures return `MissingMigration` / `InvalidVersion`.
 

@@ -75,42 +75,58 @@ Result<void> validateTree(const ConfigValue& value, std::size_t depth) {
 
 void freeSubtree(NodeArena& arena, NodeId id);
 
+// Owns a detached subtree until dismiss(): if building throws (ADR-018 lets
+// std::bad_alloc propagate), the destructor frees the partial subtree so a
+// failed write cannot strand nodes in the arena.
+class SubtreeGuard {
+ public:
+  SubtreeGuard(NodeArena& arena, NodeId id) : arena_(&arena), id_(id) {}
+  SubtreeGuard(const SubtreeGuard&) = delete;
+  SubtreeGuard& operator=(const SubtreeGuard&) = delete;
+  ~SubtreeGuard() {
+    if (id_ != kNodeIdNone) {
+      freeSubtree(*arena_, id_);
+    }
+  }
+
+  void reset(NodeId id) noexcept { id_ = id; }
+  void dismiss() noexcept { id_ = kNodeIdNone; }
+
+ private:
+  NodeArena* arena_;
+  NodeId id_;
+};
+
 NodeId buildFromValue(NodeArena& arena, const ConfigValue& value,
                       NodeId parent) {
   const NodeId id = arena.allocate(value.type());
   arena.get(id).parent = parent;
-  try {
-    switch (value.type()) {
-      case NodeType::Object:
-        arena.get(id).members.reserve(value.members().size());
-        for (const auto& member : value.members()) {
-          // Copy the key before building the child: with capacity reserved,
-          // the emplace is then non-throwing, so a failed key copy cannot
-          // strand an already-built subtree outside id's child list.
-          std::string key = member.first;
-          // allocate may grow the arena, so re-fetch the node by id each
-          // time.
-          const NodeId child = buildFromValue(arena, member.second, id);
-          arena.get(id).members.emplace_back(std::move(key), child);
-        }
-        break;
-      case NodeType::Array:
-        arena.get(id).elements.reserve(value.elements().size());
-        for (const auto& element : value.elements()) {
-          const NodeId child = buildFromValue(arena, element, id);
-          arena.get(id).elements.push_back(child);
-        }
-        break;
-      default:
-        arena.get(id).scalar = value.scalar();
-        break;
-    }
-  } catch (...) {
-    // std::bad_alloc mid-build (ADR-018 lets it propagate): release the
-    // partial subtree so a failed set() cannot strand nodes in the arena.
-    freeSubtree(arena, id);
-    throw;
+  SubtreeGuard guard(arena, id);
+  // allocate may grow the arena, so re-fetch nodes by id after every build.
+  switch (value.type()) {
+    case NodeType::Object:
+      arena.get(id).members.reserve(value.members().size());
+      for (const auto& member : value.members()) {
+        const NodeId child = buildFromValue(arena, member.second, id);
+        SubtreeGuard childGuard(arena, child);  // owns child until it is linked
+        arena.get(id).members.emplace_back(member.first, child);
+        childGuard.dismiss();
+      }
+      break;
+    case NodeType::Array:
+      arena.get(id).elements.reserve(value.elements().size());
+      for (const auto& element : value.elements()) {
+        const NodeId child = buildFromValue(arena, element, id);
+        SubtreeGuard childGuard(arena, child);
+        arena.get(id).elements.push_back(child);
+        childGuard.dismiss();
+      }
+      break;
+    default:
+      arena.get(id).scalar = value.scalar();
+      break;
   }
+  guard.dismiss();
   return id;
 }
 
@@ -136,60 +152,27 @@ void freeSubtree(NodeArena& arena, NodeId id) {
 
 // Replaces target's contents with value's. Precondition: same NodeType. The
 // target keeps its slot and generation, so handles to it stay valid;
-// descendant handles are detectably invalidated.
-//
-// Replacements are built completely before the old contents are freed, so a
+// descendant handles are detectably invalidated. The replacement is built
+// fully detached first, and every splice step after it is non-throwing, so a
 // std::bad_alloc mid-build (ADR-018 lets it propagate) leaves the tree
 // exactly as it was — the atomic-write guarantee (ADR-019) holds under
 // allocation failure too.
 void assignContents(NodeArena& arena, NodeId target, const ConfigValue& value) {
   assert(arena.get(target).type == value.type());
-  switch (value.type()) {
-    case NodeType::Object: {
-      std::vector<std::pair<std::string, NodeId>> members;
-      members.reserve(value.members().size());
-      try {
-        for (const auto& member : value.members()) {
-          // Copy the key before building the child: with capacity reserved,
-          // the emplace itself is then non-throwing, so a failed key copy
-          // cannot strand an already-built subtree.
-          std::string key = member.first;
-          const NodeId child = buildFromValue(arena, member.second, target);
-          members.emplace_back(std::move(key), child);
-        }
-      } catch (...) {
-        for (const auto& member : members) {
-          freeSubtree(arena, member.second);
-        }
-        throw;
-      }
-      freeChildren(arena, target);
-      arena.get(target).members = std::move(members);
-      break;
-    }
-    case NodeType::Array: {
-      std::vector<NodeId> elements;
-      elements.reserve(value.elements().size());
-      try {
-        for (const auto& element : value.elements()) {
-          elements.push_back(buildFromValue(arena, element, target));
-        }
-      } catch (...) {
-        for (const NodeId element : elements) {
-          freeSubtree(arena, element);
-        }
-        throw;
-      }
-      freeChildren(arena, target);
-      arena.get(target).elements = std::move(elements);
-      break;
-    }
-    default: {
-      Scalar replacement = value.scalar();  // may throw; target untouched
-      arena.get(target).scalar = std::move(replacement);
-      break;
-    }
+  const NodeId built = buildFromValue(arena, value, kNodeIdNone);
+  freeChildren(arena, target);
+  Node& builtNode = arena.get(built);
+  Node& targetNode = arena.get(target);
+  targetNode.scalar = std::move(builtNode.scalar);
+  targetNode.members = std::move(builtNode.members);
+  targetNode.elements = std::move(builtNode.elements);
+  for (const auto& member : targetNode.members) {
+    arena.get(member.second).parent = target;
   }
+  for (const NodeId element : targetNode.elements) {
+    arena.get(element).parent = target;
+  }
+  arena.release(built);
 }
 
 ConfigValue buildValue(const NodeArena& arena, NodeId id) {
@@ -300,9 +283,11 @@ Result<WritePlan> planWrite(const NodeArena& arena, NodeId rootId,
   return WritePlan{current, segments.size()};
 }
 
-// The created chain is built detached and joined to the existing tree only
-// as the final, non-throwing step, so a std::bad_alloc mid-build (ADR-018
-// lets it propagate) leaves the tree exactly as it was (ADR-019).
+// The created chain is assembled detached, bottom-up, and joined to the
+// existing tree as the final step. A std::bad_alloc anywhere (ADR-018 lets
+// it propagate) unwinds through SubtreeGuard, leaving the tree exactly as it
+// was (ADR-019): the join emplace has the strong guarantee, so the anchor is
+// untouched on failure.
 void applyWrite(NodeArena& arena, const WritePlan& plan,
                 const std::vector<PathSegment>& segments,
                 const ConfigValue& value) {
@@ -310,61 +295,34 @@ void applyWrite(NodeArena& arena, const WritePlan& plan,
     assignContents(arena, plan.node, value);
     return;
   }
-  NodeId head = kNodeIdNone;  // first created node, still detached
-  try {
-    NodeId tail = kNodeIdNone;
-    NodeId parent = plan.node;
-    for (std::size_t j = plan.createFrom; j < segments.size(); ++j) {
-      const bool isFinal = (j + 1 == segments.size());
-      // For links inside the chain, copy the key before building the child
-      // (see assignContents): the emplace below is then non-throwing.
-      std::string key;
-      if (tail != kNodeIdNone &&
-          segments[j].kind == PathSegment::Kind::Key) {
-        key = segments[j].key;
-        arena.get(tail).members.reserve(1);
-      } else if (tail != kNodeIdNone) {
-        arena.get(tail).elements.reserve(1);
-      }
-      NodeId child;
-      if (isFinal) {
-        child = buildFromValue(arena, value, parent);
-      } else {
-        // Intermediate type is determined by the next segment: a key needs
-        // an Object to live in, an index needs an Array.
-        const NodeType type = segments[j + 1].kind == PathSegment::Kind::Key
-                                  ? NodeType::Object
-                                  : NodeType::Array;
-        child = arena.allocate(type);
-        arena.get(child).parent = parent;
-      }
-      if (tail == kNodeIdNone) {
-        head = child;
-      } else if (segments[j].kind == PathSegment::Kind::Key) {
-        arena.get(tail).members.emplace_back(std::move(key), child);
-      } else {
-        arena.get(tail).elements.push_back(child);
-      }
-      tail = child;
-      parent = child;
-    }
-    // Join point: everything fallible happens before the emplace, which
-    // runs with reserved capacity and a prebuilt key.
-    Node& anchor = arena.get(plan.node);
-    if (segments[plan.createFrom].kind == PathSegment::Kind::Key) {
-      std::string key = segments[plan.createFrom].key;
-      anchor.members.reserve(anchor.members.size() + 1);
-      anchor.members.emplace_back(std::move(key), head);
+  NodeId chain = buildFromValue(arena, value, kNodeIdNone);
+  SubtreeGuard guard(arena, chain);
+  for (std::size_t j = segments.size() - 1; j > plan.createFrom; --j) {
+    // The container addressed by segments[j - 1]: a key segment needs an
+    // Object to live in, an index segment an Array.
+    const NodeType type = segments[j].kind == PathSegment::Kind::Key
+                              ? NodeType::Object
+                              : NodeType::Array;
+    const NodeId container = arena.allocate(type);
+    SubtreeGuard containerGuard(arena, container);
+    arena.get(chain).parent = container;
+    if (segments[j].kind == PathSegment::Kind::Key) {
+      arena.get(container).members.emplace_back(segments[j].key, chain);
     } else {
-      anchor.elements.reserve(anchor.elements.size() + 1);
-      anchor.elements.push_back(head);
+      arena.get(container).elements.push_back(chain);
     }
-  } catch (...) {
-    if (head != kNodeIdNone) {
-      freeSubtree(arena, head);
-    }
-    throw;
+    containerGuard.dismiss();
+    chain = container;
+    guard.reset(chain);
   }
+  arena.get(chain).parent = plan.node;
+  Node& anchor = arena.get(plan.node);
+  if (segments[plan.createFrom].kind == PathSegment::Kind::Key) {
+    anchor.members.emplace_back(segments[plan.createFrom].key, chain);
+  } else {
+    anchor.elements.push_back(chain);
+  }
+  guard.dismiss();
 }
 
 }  // namespace

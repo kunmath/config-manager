@@ -511,7 +511,7 @@ Validation includes:
 
 * Every registered version has a migration to the next registered
   version (catalog order), up to the latest.
-* No duplicate migrations exist.
+* No duplicate migrations exist (rejected when registered).
 * Migration versions reference versions known to the VersionCatalog.
 * Only migrations between adjacent registered versions may be
   registered.

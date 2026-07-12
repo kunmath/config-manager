@@ -5,7 +5,6 @@
 // public headers see NodeArena only as a forward declaration, so the storage
 // layout can change without touching the API surface.
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -25,45 +24,34 @@ struct Node {
   Scalar scalar;                                       // when scalar type
   std::vector<std::pair<std::string, NodeId>> members;  // when Object (ordered)
   std::vector<NodeId> elements;                         // when Array
-  NodeId parent = kNodeIdNone;
+  NodeId parent = kNodeIdNone;  // while dead: next slot in the free list
   std::uint32_t generation = 0;  // bumped on free: stale handles are detectable
   bool alive = false;
 };
 
-// Flat arena of nodes addressed by stable NodeId. Slots are recycled through
-// a free list; freeing a slot bumps its generation so any ConfigNode holding
-// the old generation is detectably stale.
+// Flat arena of nodes addressed by stable NodeId. Dead slots form an
+// intrusive free list threaded through their parent field, so release()
+// never allocates and is noexcept by construction. Freeing a slot bumps its
+// generation so any ConfigNode holding the old generation is detectably
+// stale.
 class NodeArena {
  public:
   NodeArena() = default;
-  // Copies (clone()) must re-establish the release() capacity invariant
-  // below: a copied vector's capacity is only its size.
-  NodeArena(const NodeArena& other)
-      : nodes_(other.nodes_), freeList_(other.freeList_) {
-    freeList_.reserve(nodes_.size());
-  }
+  NodeArena(const NodeArena&) = default;  // clone()
   NodeArena& operator=(const NodeArena&) = delete;
 
   NodeId allocate(NodeType type) {
-    if (!freeList_.empty()) {
+    if (freeHead_ != kNodeIdNone) {
       // The generation was already bumped by release(), so every handle
       // into the slot's previous life is stale; reuse does not bump again.
-      const NodeId id = freeList_.back();
-      freeList_.pop_back();
+      const NodeId id = freeHead_;
       Node& node = nodes_[id];
+      freeHead_ = node.parent;
       node.type = type;
       node.scalar = Scalar{};
       node.parent = kNodeIdNone;
       node.alive = true;
       return id;
-    }
-    // Keep freeList_'s capacity at least the node count, so release() never
-    // allocates: freeing must be non-throwing or a std::bad_alloc mid-free
-    // could leave a node half-emptied, breaking the atomic-write guarantee
-    // (ADR-019).
-    if (freeList_.capacity() < nodes_.size() + 1) {
-      freeList_.reserve(std::max<std::size_t>(nodes_.size() + 1,
-                                              2 * freeList_.capacity()));
     }
     Node node;
     node.type = type;
@@ -80,8 +68,8 @@ class NodeArena {
     node.scalar = Scalar{};
     node.members.clear();
     node.elements.clear();
-    node.parent = kNodeIdNone;
-    freeList_.push_back(id);
+    node.parent = freeHead_;
+    freeHead_ = id;
   }
 
   Node& get(NodeId id) {
@@ -100,7 +88,7 @@ class NodeArena {
 
  private:
   std::vector<Node> nodes_;
-  std::vector<NodeId> freeList_;
+  NodeId freeHead_ = kNodeIdNone;
 };
 
 }  // namespace configmanager
