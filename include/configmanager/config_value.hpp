@@ -4,7 +4,9 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -34,9 +36,10 @@ using Scalar = std::variant<std::monostate,  // Null
 //
 // set()/push() are builder preconditions, not fallible operations: set()
 // requires an Object, push() requires an Array. Violating a precondition is a
-// programming error (debug assertion), not a recoverable failure. Key
-// validity (ADR-021) is enforced where a value crosses into a model, not
-// here.
+// programming error (debug assertion), not a recoverable failure. of()'s two
+// data-dependent preconditions throw a logic error in every build (see
+// below). Key validity (ADR-021) is enforced where a value crosses into a
+// model, not here.
 class ConfigValue {
  public:
   ConfigValue() = default;  // Null
@@ -44,20 +47,52 @@ class ConfigValue {
   static ConfigValue object();
   static ConfigValue array();
 
+  // Detects of()'s data-dependent precondition violations — an unsigned
+  // value beyond Int's range, a null C string. Returns the violation
+  // message, or nullptr for a valid scalar. Callers that must not throw
+  // (ConfigModel::set) check this before calling of().
+  template <typename T>
+  static const char* ofPreconditionViolation(const T& scalar) noexcept {
+    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool> &&
+                  std::is_unsigned_v<T>) {
+      // Int is stored as std::int64_t: a larger value would silently wrap.
+      if (static_cast<std::uint64_t>(scalar) >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::int64_t>::max())) {
+        return "unsigned integer value is not representable as Int "
+               "(std::int64_t)";
+      }
+    }
+    if constexpr (std::is_pointer_v<T>) {
+      if (scalar == nullptr) {
+        return "null C string is not a valid String value";
+      }
+    }
+    return nullptr;
+  }
+
+  // Accepts an explicit supported set only: an unconstrained fallback would
+  // silently stringify arbitrary types (or narrow long double). Violating a
+  // precondition (ofPreconditionViolation) throws a logic error in every
+  // build; a throwing default factory is mapped to MigrationFailed at the
+  // catalog boundary (ADR-018).
   template <typename T>
   static ConfigValue of(T scalar) {
+    constexpr bool kIsString =
+        std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
+        std::is_same_v<T, const char*> || std::is_same_v<T, char*>;
+    static_assert(std::is_integral_v<T> || std::is_same_v<T, float> ||
+                      std::is_same_v<T, double> || kIsString,
+                  "ConfigValue::of supports bool, standard integer types, "
+                  "float, double, std::string, std::string_view, and C "
+                  "strings only");
     ConfigValue value;
     if constexpr (std::is_same_v<T, bool>) {
       value.type_ = NodeType::Bool;
       value.scalar_ = scalar;
     } else if constexpr (std::is_integral_v<T>) {
-      if constexpr (std::is_unsigned_v<T>) {
-        // Builder precondition: Int is stored as std::int64_t. The fallible
-        // boundary for out-of-range values is ConfigModel::set.
-        assert(static_cast<std::uint64_t>(scalar) <=
-                   static_cast<std::uint64_t>(
-                       std::numeric_limits<std::int64_t>::max()) &&
-               "ConfigValue::of: unsigned value exceeds Int range");
+      if (const char* violation = ofPreconditionViolation(scalar)) {
+        throw std::out_of_range(std::string("ConfigValue::of: ") + violation);
       }
       value.type_ = NodeType::Int;
       value.scalar_ = static_cast<std::int64_t>(scalar);
@@ -65,6 +100,10 @@ class ConfigValue {
       value.type_ = NodeType::Double;
       value.scalar_ = static_cast<double>(scalar);
     } else {
+      if (const char* violation = ofPreconditionViolation(scalar)) {
+        throw std::invalid_argument(std::string("ConfigValue::of: ") +
+                                    violation);
+      }
       value.type_ = NodeType::String;
       value.scalar_ = std::string(std::move(scalar));
     }

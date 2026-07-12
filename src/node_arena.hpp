@@ -6,6 +6,7 @@
 // layout can change without touching the API surface.
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -23,23 +24,29 @@ struct Node {
   Scalar scalar;                                       // when scalar type
   std::vector<std::pair<std::string, NodeId>> members;  // when Object (ordered)
   std::vector<NodeId> elements;                         // when Array
-  NodeId parent = kNodeIdNone;
+  NodeId parent = kNodeIdNone;  // while dead: next slot in the free list
   std::uint32_t generation = 0;  // bumped on free: stale handles are detectable
   bool alive = false;
 };
 
-// Flat arena of nodes addressed by stable NodeId. Slots are recycled through
-// a free list; freeing a slot bumps its generation so any ConfigNode holding
-// the old generation is detectably stale.
+// Flat arena of nodes addressed by stable NodeId. Dead slots form an
+// intrusive free list threaded through their parent field, so release()
+// never allocates and is noexcept by construction. Freeing a slot bumps its
+// generation so any ConfigNode holding the old generation is detectably
+// stale.
 class NodeArena {
  public:
+  NodeArena() = default;
+  NodeArena(const NodeArena&) = default;  // clone()
+  NodeArena& operator=(const NodeArena&) = delete;
+
   NodeId allocate(NodeType type) {
-    if (!freeList_.empty()) {
+    if (freeHead_ != kNodeIdNone) {
       // The generation was already bumped by release(), so every handle
       // into the slot's previous life is stale; reuse does not bump again.
-      const NodeId id = freeList_.back();
-      freeList_.pop_back();
+      const NodeId id = freeHead_;
       Node& node = nodes_[id];
+      freeHead_ = node.parent;
       node.type = type;
       node.scalar = Scalar{};
       node.parent = kNodeIdNone;
@@ -53,7 +60,7 @@ class NodeArena {
     return static_cast<NodeId>(nodes_.size() - 1);
   }
 
-  void release(NodeId id) {
+  void release(NodeId id) noexcept {
     Node& node = nodes_[id];
     assert(node.alive && "NodeArena::release requires a live node");
     node.alive = false;
@@ -61,8 +68,8 @@ class NodeArena {
     node.scalar = Scalar{};
     node.members.clear();
     node.elements.clear();
-    node.parent = kNodeIdNone;
-    freeList_.push_back(id);
+    node.parent = freeHead_;
+    freeHead_ = id;
   }
 
   Node& get(NodeId id) {
@@ -81,7 +88,7 @@ class NodeArena {
 
  private:
   std::vector<Node> nodes_;
-  std::vector<NodeId> freeList_;
+  NodeId freeHead_ = kNodeIdNone;
 };
 
 }  // namespace configmanager

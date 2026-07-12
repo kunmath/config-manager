@@ -37,8 +37,12 @@ constexpr std::uint64_t kMaxVersion = std::numeric_limits<VersionId>::max();
 
 // parse_ws_pcdata keeps whitespace-only text nodes: they are formatting
 // inside containers but significant inside string scalars (e.g. <s>  </s>).
+// parse_fragment keeps document-level text too — without it pugixml
+// silently discards text outside the root element, which load() must
+// reject as malformed. The relaxations fragment mode brings (no root,
+// several roots) are all checked explicitly below.
 constexpr unsigned int kParseFlags =
-    pugi::parse_default | pugi::parse_ws_pcdata;
+    pugi::parse_default | pugi::parse_ws_pcdata | pugi::parse_fragment;
 
 bool isPathAddressable(std::string_view key) {
   return !key.empty() && key.find_first_of(".[]") == std::string_view::npos;
@@ -165,7 +169,8 @@ Result<VersionId> parseVersionCarrier(std::string_view text) {
   return static_cast<VersionId>(value);
 }
 
-Result<ConfigValue> parseValue(const pugi::xml_node& element);
+Result<ConfigValue> parseValue(const pugi::xml_node& element,
+                               std::size_t depth);
 
 bool hasElementChildren(const pugi::xml_node& element) {
   for (const pugi::xml_node& child : element.children()) {
@@ -195,7 +200,9 @@ Result<std::string> scalarText(const pugi::xml_node& element) {
   return text;
 }
 
-Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element) {
+// `depth` is the element's node depth in the model, the <config> root at 0.
+Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element,
+                                       std::size_t depth) {
   ConfigValue object = ConfigValue::object();
   for (const pugi::xml_node& child : element.children()) {
     switch (child.type()) {
@@ -219,7 +226,7 @@ Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element) {
                             std::string(element.name()) + "'");
           }
         }
-        Result<ConfigValue> value = parseValue(child);
+        Result<ConfigValue> value = parseValue(child, depth + 1);
         if (!value) {
           return value;
         }
@@ -241,7 +248,8 @@ Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element) {
   return object;
 }
 
-Result<ConfigValue> parseArrayItems(const pugi::xml_node& element) {
+Result<ConfigValue> parseArrayItems(const pugi::xml_node& element,
+                                    std::size_t depth) {
   ConfigValue array = ConfigValue::array();
   for (const pugi::xml_node& child : element.children()) {
     switch (child.type()) {
@@ -252,7 +260,7 @@ Result<ConfigValue> parseArrayItems(const pugi::xml_node& element) {
                           "' must contain only <item> children, got '" +
                           child.name() + "'");
         }
-        Result<ConfigValue> value = parseValue(child);
+        Result<ConfigValue> value = parseValue(child, depth + 1);
         if (!value) {
           return value;
         }
@@ -316,7 +324,15 @@ Result<ConfigValue> parseDoubleText(const std::string& text,
   return ConfigValue::of(value);
 }
 
-Result<ConfigValue> parseValue(const pugi::xml_node& element) {
+Result<ConfigValue> parseValue(const pugi::xml_node& element,
+                               std::size_t depth) {
+  // Checked on the way down, so the parse recursion itself stays bounded
+  // even for a hostile document (§4.4).
+  if (depth > kMaxTreeDepth) {
+    return fail(ErrorCode::ParseError,
+                "document exceeds the maximum nesting depth (" +
+                    std::to_string(kMaxTreeDepth) + ")");
+  }
   const char* type = nullptr;
   for (const pugi::xml_attribute& attr : element.attributes()) {
     if (std::string_view(attr.name()) == kTypeAttr) {
@@ -340,7 +356,7 @@ Result<ConfigValue> parseValue(const pugi::xml_node& element) {
     // carries type="object", §6.1); otherwise its text is a String and a
     // bare empty element is the empty string.
     if (hasElementChildren(element)) {
-      return parseObjectMembers(element);
+      return parseObjectMembers(element, depth);
     }
     Result<std::string> text = scalarText(element);
     if (!text) {
@@ -355,8 +371,8 @@ Result<ConfigValue> parseValue(const pugi::xml_node& element) {
   }
 
   const std::string_view typeName(type);
-  if (typeName == "object") return parseObjectMembers(element);
-  if (typeName == "array") return parseArrayItems(element);
+  if (typeName == "object") return parseObjectMembers(element, depth);
+  if (typeName == "array") return parseArrayItems(element, depth);
   if (typeName == "null" || typeName == "bool" || typeName == "int" ||
       typeName == "double") {
     Result<std::string> text = scalarText(element);
@@ -379,6 +395,18 @@ Result<ConfigValue> parseValue(const pugi::xml_node& element) {
               "unknown type attribute value '" + std::string(typeName) +
                   "' on element '" + element.name() +
                   "' (expected bool, int, double, null, object, or array)");
+}
+
+// pugixml signals allocation failure with empty handles or false returns
+// instead of exceptions. Convert to std::bad_alloc so the memory-exhaustion
+// policy (ADR-018: bad_alloc propagates) holds, rather than save() reporting
+// success for a silently truncated document.
+template <typename HandleOrBool>
+HandleOrBool checkAlloc(HandleOrBool result) {
+  if (!result) {
+    throw std::bad_alloc();
+  }
+  return result;
 }
 
 Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
@@ -411,8 +439,30 @@ Result<void> appendItems(pugi::xml_node element, const ConfigNode& array) {
   return {};
 }
 
+// Named appends need one more check beyond the handle: pugixml can return a
+// live node/attribute whose internal set_name() failed, observable as an
+// empty name (no caller here passes an empty name).
+pugi::xml_node appendNamedChild(pugi::xml_node parent, const char* name) {
+  pugi::xml_node child = checkAlloc(parent.append_child(name));
+  checkAlloc(child.name()[0] != '\0');
+  return child;
+}
+
+pugi::xml_attribute appendNamedAttribute(pugi::xml_node element,
+                                         const char* name) {
+  pugi::xml_attribute attribute = checkAlloc(element.append_attribute(name));
+  checkAlloc(attribute.name()[0] != '\0');
+  return attribute;
+}
+
 void setElementText(pugi::xml_node element, const std::string& text) {
-  element.append_child(pugi::node_pcdata).set_value(text.c_str());
+  checkAlloc(
+      checkAlloc(element.append_child(pugi::node_pcdata)).set_value(
+          text.c_str()));
+}
+
+void setTypeAttribute(pugi::xml_node element, const char* type) {
+  checkAlloc(appendNamedAttribute(element, kTypeAttr).set_value(type));
 }
 
 Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
@@ -420,20 +470,20 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
   if (!isValidElementName(name)) {
     return fail(ErrorCode::SerializationError,
                 "model key '" + name +
-                    "' is not a valid XML element name (this backend admits "
-                    "ASCII names matching [A-Za-z_][A-Za-z0-9_-]*)");
+                    "' is not a valid XML element name (XML 1.0 Name "
+                    "production, ':' excluded)");
   }
-  pugi::xml_node element = parent.append_child(name.c_str());
+  pugi::xml_node element = appendNamedChild(parent, name.c_str());
   switch (node.type()) {
     case NodeType::Null:
-      element.append_attribute(kTypeAttr).set_value("null");
+      setTypeAttribute(element, "null");
       return {};
     case NodeType::Bool:
-      element.append_attribute(kTypeAttr).set_value("bool");
+      setTypeAttribute(element, "bool");
       setElementText(element, node.as<bool>().value() ? "true" : "false");
       return {};
     case NodeType::Int:
-      element.append_attribute(kTypeAttr).set_value("int");
+      setTypeAttribute(element, "int");
       setElementText(element, std::to_string(node.as<std::int64_t>().value()));
       return {};
     case NodeType::Double: {
@@ -447,7 +497,7 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
       const auto [ptr, ec] =
           std::to_chars(buffer, buffer + sizeof buffer, value);
       assert(ec == std::errc() && "to_chars cannot fail for finite doubles");
-      element.append_attribute(kTypeAttr).set_value("double");
+      setTypeAttribute(element, "double");
       setElementText(element, std::string(buffer, ptr));
       return {};
     }
@@ -467,12 +517,12 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
     case NodeType::Object:
       if (node.size() == 0) {
         // Distinguishes an empty Object from the empty string (§6.1).
-        element.append_attribute(kTypeAttr).set_value("object");
+        setTypeAttribute(element, "object");
         return {};
       }
       return appendMembers(element, node);
     case NodeType::Array:
-      element.append_attribute(kTypeAttr).set_value("array");
+      setTypeAttribute(element, "array");
       return appendItems(element, node);
   }
   assert(false && "unreachable: exhaustive NodeType switch");
@@ -490,11 +540,25 @@ Result<VersionedConfig> XmlInterface::load(std::istream& in) {
                   std::string("XML parse failed: ") + parsed.description());
     }
     const pugi::xml_node root = doc.document_element();
-    // pugixml is lenient about trailing content after the root element.
+    // pugixml is lenient about extra roots and stray text outside the root
+    // element; both are well-formedness violations.
     for (const pugi::xml_node& child : doc.children()) {
-      if (child.type() == pugi::node_element && child != root) {
-        return fail(ErrorCode::ParseError,
-                    "document has more than one root element");
+      switch (child.type()) {
+        case pugi::node_element:
+          if (child != root) {
+            return fail(ErrorCode::ParseError,
+                        "document has more than one root element");
+          }
+          break;
+        case pugi::node_pcdata:
+        case pugi::node_cdata:
+          if (!isXmlWhitespace(child.value())) {
+            return fail(ErrorCode::ParseError,
+                        "document has text outside the root element");
+          }
+          break;
+        default:
+          break;
       }
     }
     if (std::string_view(root.name()) != kRootName) {
@@ -504,6 +568,7 @@ Result<VersionedConfig> XmlInterface::load(std::istream& in) {
     }
 
     std::optional<VersionId> version;
+    bool sawTypeAttr = false;
     for (const pugi::xml_attribute& attr : root.attributes()) {
       const std::string_view name(attr.name());
       if (name == kVersionAttr) {
@@ -518,6 +583,11 @@ Result<VersionedConfig> XmlInterface::load(std::istream& in) {
         }
         version = *carrier;
       } else if (name == kTypeAttr) {
+        if (sawTypeAttr) {
+          return fail(ErrorCode::ParseError,
+                      "duplicate 'type' attribute on the document root");
+        }
+        sawTypeAttr = true;
         if (std::string_view(attr.value()) != "object") {
           return fail(ErrorCode::ParseError,
                       "document root must be an object, got type=\"" +
@@ -536,7 +606,7 @@ Result<VersionedConfig> XmlInterface::load(std::istream& in) {
                   "attribute)");
     }
 
-    Result<ConfigValue> rootValue = parseObjectMembers(root);
+    Result<ConfigValue> rootValue = parseObjectMembers(root, /*depth=*/0);
     if (!rootValue) {
       return fail(rootValue.error().code,
                   std::move(rootValue.error().message));
@@ -566,9 +636,9 @@ Result<void> XmlInterface::save(const VersionedConfig& config,
     // is a root *attribute*, outside the model's key space, so a model
     // member named "version" is a plain child element.
     pugi::xml_document doc;
-    pugi::xml_node root = doc.append_child(kRootName);
-    root.append_attribute(kVersionAttr)
-        .set_value(static_cast<unsigned long long>(config.version));
+    pugi::xml_node root = appendNamedChild(doc, kRootName);
+    checkAlloc(appendNamedAttribute(root, kVersionAttr)
+                   .set_value(static_cast<unsigned long long>(config.version)));
     Result<void> appended = appendMembers(root, config.model.root());
     if (!appended) {
       return appended;

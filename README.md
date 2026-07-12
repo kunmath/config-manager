@@ -140,9 +140,12 @@ build above), dependencies are resolved via `find_package` first and fetched
 (pinned tags) as a fallback, so no vcpkg or conan is needed. Distro packagers
 can force `find_package`-only resolution with
 `-DCONFIGMANAGER_USE_SYSTEM_DEPS=ON`. Consuming an *installed* ConfigManager
-via `find_package` requires its dependencies (`tl-expected`; `pugixml` when
-the XML backend was built against a system pugixml) to be findable on the
-consumer's machine — they are resolved with `find_dependency`, not fetched.
+via `find_package` requires only the dependencies that were **system copies
+at build time** to be findable on the consumer's machine (`tl-expected`;
+`pugixml` when the XML backend was built against a system pugixml, and only
+when the `xml` component is requested) — those are resolved with
+`find_dependency`, not fetched. A *fetched* `tl-expected` ships its headers
+inside ConfigManager's own install and needs nothing on the consumer side.
 
 ### CMake options
 
@@ -150,8 +153,8 @@ consumer's machine — they are resolved with `find_dependency`, not fetched.
 |---|---|---|
 | `CONFIGMANAGER_BUILD_JSON` | `ON` | Build the JSON backend (`configmanager::json`) |
 | `CONFIGMANAGER_BUILD_XML` | `ON` | Build the XML backend (`configmanager::xml`) |
-| `CONFIGMANAGER_BUILD_TESTS` | `ON` | Build the GoogleTest unit tests |
-| `CONFIGMANAGER_BUILD_EXAMPLES` | `ON` | Build (and register with CTest) the example programs |
+| `CONFIGMANAGER_BUILD_TESTS` | `ON` when top-level | Build the GoogleTest unit tests (defaults to `OFF` when consumed via `add_subdirectory`/FetchContent) |
+| `CONFIGMANAGER_BUILD_EXAMPLES` | `ON` when top-level | Build (and register with CTest) the example programs (defaults to `OFF` when consumed via `add_subdirectory`/FetchContent) |
 | `CONFIGMANAGER_USE_SYSTEM_DEPS` | `OFF` | Resolve all dependencies via `find_package` only — no network fetch |
 
 ### Requirements

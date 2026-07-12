@@ -1,6 +1,8 @@
 #include "configmanager/config_node.hpp"
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -174,6 +176,67 @@ TEST(ConfigNodeTest, HandlesWorkOnClonedModelIndependently) {
   EXPECT_FALSE(original.valid());
   ASSERT_TRUE(cloned.valid());
   EXPECT_EQ(cloned.as<std::int64_t>().value(), 1);
+}
+
+// ---- Scalar conversion edge cases (docs/HighLevelDesign.md §4.4) --------------
+
+TEST(ConfigNodeTest, NonFiniteDoublesReadBackAsDouble) {
+  ConfigModel model;
+  ASSERT_TRUE(model.set("nan", std::numeric_limits<double>::quiet_NaN()));
+  ASSERT_TRUE(model.set("inf", std::numeric_limits<double>::infinity()));
+
+  auto nan = model.get<double>("nan");
+  ASSERT_TRUE(nan);
+  EXPECT_TRUE(std::isnan(*nan));
+  auto inf = model.get<double>("inf");
+  ASSERT_TRUE(inf);
+  EXPECT_EQ(*inf, std::numeric_limits<double>::infinity());
+}
+
+TEST(ConfigNodeTest, NonFiniteDoublesConvertToFloat) {
+  ConfigModel model;
+  ASSERT_TRUE(model.set("nan", std::numeric_limits<double>::quiet_NaN()));
+  ASSERT_TRUE(model.set("inf", -std::numeric_limits<double>::infinity()));
+
+  auto nan = model.get<float>("nan");
+  ASSERT_TRUE(nan);
+  EXPECT_TRUE(std::isnan(*nan));
+  auto inf = model.get<float>("inf");
+  ASSERT_TRUE(inf);
+  EXPECT_EQ(*inf, -std::numeric_limits<float>::infinity());
+}
+
+TEST(ConfigNodeTest, DoubleOutsideFloatRangeIsInvalidType) {
+  ConfigModel model;
+  ASSERT_TRUE(model.set("big", 1e300));
+  ASSERT_TRUE(model.set("small", -1e300));
+  EXPECT_EQ(model.get<float>("big").error().code, ErrorCode::InvalidType);
+  EXPECT_EQ(model.get<float>("small").error().code, ErrorCode::InvalidType);
+  // Still exactly readable at full width.
+  EXPECT_EQ(model.get<double>("big").value(), 1e300);
+}
+
+TEST(ConfigNodeTest, InexactDoubleToFloatIsInvalidType) {
+  ConfigModel model;
+  ASSERT_TRUE(model.set("pi", 3.141592653589793));
+  EXPECT_EQ(model.get<float>("pi").error().code, ErrorCode::InvalidType);
+  ASSERT_TRUE(model.set("half", 0.5));  // exact in both widths
+  EXPECT_EQ(model.get<float>("half").value(), 0.5f);
+}
+
+TEST(ConfigNodeTest, DoubleReadsWidenToLongDouble) {
+  // long double's limits exceed double's on x86-64; the range check must not
+  // narrow them to double.
+  ConfigModel model;
+  ASSERT_TRUE(model.set("big", 1e300));
+  // Not 1e300L: the stored value is the *double* nearest 1e300, widened.
+  EXPECT_EQ(model.get<long double>("big").value(),
+            static_cast<long double>(1e300));
+  ASSERT_TRUE(model.set("pi", 3.141592653589793));
+  EXPECT_EQ(model.get<long double>("pi").value(),
+            static_cast<long double>(3.141592653589793));
+  ASSERT_TRUE(model.set("nan", std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_TRUE(std::isnan(model.get<long double>("nan").value()));
 }
 
 }  // namespace

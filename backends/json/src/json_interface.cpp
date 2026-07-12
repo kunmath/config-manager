@@ -1,6 +1,7 @@
 #include "configmanager/backends/json_interface.hpp"
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -57,8 +58,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
       return setError(ErrorCode::InvalidVersion,
                       "version carrier must not be negative");
     }
-    attach(ConfigValue::of(val));
-    return true;
+    return attach(ConfigValue::of(val));
   }
 
   bool number_unsigned(number_unsigned_t val) override {
@@ -77,8 +77,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
                       "JSON number " + std::to_string(val) +
                           " is outside std::int64_t's range");
     }
-    attach(ConfigValue::of(static_cast<std::int64_t>(val)));
-    return true;
+    return attach(ConfigValue::of(static_cast<std::int64_t>(val)));
   }
 
   bool number_float(number_float_t val, const string_t& s) override {
@@ -96,8 +95,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
                       "integral JSON number '" + s +
                           "' is outside std::int64_t's range");
     }
-    attach(ConfigValue::of(val));
-    return true;
+    return attach(ConfigValue::of(val));
   }
 
   bool string(string_t& val) override {
@@ -114,6 +112,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
                       "version carrier must be a native unsigned integer, "
                       "got an object");
     }
+    if (!checkContainerDepth()) return false;
     stack_.push_back(Frame{ConfigValue::object(), {}});
     return true;
   }
@@ -154,6 +153,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
                       "version carrier must be a native unsigned integer, "
                       "got an array");
     }
+    if (!checkContainerDepth()) return false;
     stack_.push_back(Frame{ConfigValue::array(), {}});
     return true;
   }
@@ -210,17 +210,36 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
       return setError(ErrorCode::InvalidVersion,
                       "version carrier must be a native unsigned integer");
     }
-    attach(std::move(value));
+    return attach(std::move(value));
+  }
+
+  // A container about to be opened sits at depth stack_.size() (the root
+  // object opens at 0). Depth-limit errors fire on the way down, before the
+  // deep value is ever built (§4.4).
+  bool checkContainerDepth() {
+    if (stack_.size() > kMaxTreeDepth) {
+      return setError(ErrorCode::ParseError,
+                      "document exceeds the maximum nesting depth (" +
+                          std::to_string(kMaxTreeDepth) + ")");
+    }
     return true;
   }
 
-  void attach(ConfigValue value) {
+  // An attached node sits at depth stack_.size(); completed containers were
+  // already depth-checked when they opened.
+  bool attach(ConfigValue value) {
+    if (stack_.size() > kMaxTreeDepth) {
+      return setError(ErrorCode::ParseError,
+                      "document exceeds the maximum nesting depth (" +
+                          std::to_string(kMaxTreeDepth) + ")");
+    }
     Frame& top = stack_.back();
     if (top.container.type() == NodeType::Object) {
       top.container.set(std::move(top.pendingKey), std::move(value));
     } else {
       top.container.push(std::move(value));
     }
+    return true;
   }
 
   bool popFrame() {
@@ -231,8 +250,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
       haveRoot_ = true;
       return true;
     }
-    attach(std::move(done));
-    return true;
+    return attach(std::move(done));
   }
 
   std::vector<Frame> stack_;
@@ -247,37 +265,56 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
 // The Result unwraps below are internal invariants, not fallible boundaries:
 // the traversal only requests the type the node reports, on handles taken
 // from a live model. value() throwing would be a library bug and is caught
-// by save()'s catch-all (ADR-018).
-OrderedJson toJson(const ConfigNode& node) {
+// by save()'s catch-all (ADR-018). The one fallible case is a non-finite
+// Double: JSON has no literal for it and nlohmann would silently emit null,
+// so it fails SerializationError instead. `name` is the member key or array
+// index, for diagnostics only.
+Result<OrderedJson> toJson(const ConfigNode& node, const std::string& name) {
   switch (node.type()) {
     case NodeType::Null:
-      return nullptr;
+      return OrderedJson(nullptr);
     case NodeType::Bool:
-      return node.as<bool>().value();
+      return OrderedJson(node.as<bool>().value());
     case NodeType::Int:
-      return node.as<std::int64_t>().value();
-    case NodeType::Double:
-      return node.as<double>().value();
+      return OrderedJson(node.as<std::int64_t>().value());
+    case NodeType::Double: {
+      const double value = node.as<double>().value();
+      if (!std::isfinite(value)) {
+        return fail(ErrorCode::SerializationError,
+                    "non-finite double at '" + name +
+                        "' is unrepresentable in JSON");
+      }
+      return OrderedJson(value);
+    }
     case NodeType::String:
-      return node.as<std::string>().value();
+      return OrderedJson(node.as<std::string>().value());
     case NodeType::Object: {
       OrderedJson object = OrderedJson::object();
       const std::vector<std::string> keys = node.keys().value();
       for (const std::string& key : keys) {
-        object[key] = toJson(node.child(key).value());
+        Result<OrderedJson> child = toJson(node.child(key).value(), key);
+        if (!child) {
+          return child;
+        }
+        object[key] = std::move(*child);
       }
       return object;
     }
     case NodeType::Array: {
       OrderedJson array = OrderedJson::array();
       for (std::size_t i = 0; i < node.size(); ++i) {
-        array.push_back(toJson(node.at(i).value()));
+        Result<OrderedJson> element =
+            toJson(node.at(i).value(), std::to_string(i));
+        if (!element) {
+          return element;
+        }
+        array.push_back(std::move(*element));
       }
       return array;
     }
   }
   assert(false && "unreachable: exhaustive NodeType switch");
-  return nullptr;
+  return OrderedJson(nullptr);
 }
 
 }  // namespace
@@ -323,7 +360,11 @@ Result<void> JsonInterface::save(const VersionedConfig& config,
     const ConfigNode root = config.model.root();
     const std::vector<std::string> keys = root.keys().value();
     for (const std::string& key : keys) {
-      doc[key] = toJson(root.child(key).value());
+      Result<OrderedJson> child = toJson(root.child(key).value(), key);
+      if (!child) {
+        return fail(child.error().code, std::move(child.error().message));
+      }
+      doc[key] = std::move(*child);
     }
     out << doc.dump(2) << '\n';
     if (!out) {

@@ -11,14 +11,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(CONFIGMANAGER_USE_SYSTEM_DEPS
   "Resolve all dependencies via find_package only (no network fetch)" OFF)
-option(CONFIGMANAGER_BUILD_TESTS "Build ConfigManager unit tests" ON)
+# Tests and examples default off when this project is consumed via
+# add_subdirectory/FetchContent, so downstream builds do not fetch
+# GoogleTest or compile binaries they never run.
+option(CONFIGMANAGER_BUILD_TESTS "Build ConfigManager unit tests"
+  ${PROJECT_IS_TOP_LEVEL})
 option(CONFIGMANAGER_BUILD_JSON
   "Build the JSON serialization backend (configmanager::json)" ON)
 option(CONFIGMANAGER_BUILD_XML
   "Build the XML serialization backend (configmanager::xml)" ON)
-option(CONFIGMANAGER_BUILD_EXAMPLES "Build ConfigManager example programs" ON)
+option(CONFIGMANAGER_BUILD_EXAMPLES "Build ConfigManager example programs"
+  ${PROJECT_IS_TOP_LEVEL})
 
 include(cmake/Dependencies.cmake)
+include(GNUInstallDirs)
 
 # ---- Core library (no serialization backends) --------------------------------
 add_library(configmanager_core
@@ -36,8 +42,21 @@ set_target_properties(configmanager_core PROPERTIES EXPORT_NAME core)
 
 target_include_directories(configmanager_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
-target_link_libraries(configmanager_core PUBLIC tl::expected)
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+# A fetched tl-expected installs its headers into this project's includedir
+# (already on core's INSTALL_INTERFACE), but its exported package hardcodes
+# `include` and breaks under a custom CMAKE_INSTALL_INCLUDEDIR — so keep the
+# target out of the exported link interface and skip its find_dependency
+# (same rationale as the backends' nlohmann/pugixml handling). A system copy
+# is a real usage requirement the installed package must resolve downstream.
+if(tl-expected_SOURCE_DIR)
+  target_link_libraries(configmanager_core PUBLIC
+    $<BUILD_INTERFACE:tl::expected>)
+  set(CONFIGMANAGER_FIND_TLEXPECTED FALSE)
+else()
+  target_link_libraries(configmanager_core PUBLIC tl::expected)
+  set(CONFIGMANAGER_FIND_TLEXPECTED TRUE)
+endif()
 target_compile_features(configmanager_core PUBLIC cxx_std_20)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -64,7 +83,6 @@ if(CONFIGMANAGER_BUILD_EXAMPLES)
 endif()
 
 # ---- Installation / package export ---------------------------------------------
-include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 install(TARGETS configmanager_core

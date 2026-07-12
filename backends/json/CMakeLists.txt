@@ -8,7 +8,7 @@ set_target_properties(configmanager_json PROPERTIES EXPORT_NAME json)
 
 target_include_directories(configmanager_json PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 # nlohmann/json is header-only and referenced from the .cpp only; the
 # BUILD_INTERFACE wrapper keeps it out of the exported link interface so a
 # downstream find_package(ConfigManager) does not need nlohmann installed.

@@ -86,8 +86,10 @@ Usage: `04_sensorbridge_xml [data_dir] [out_dir]` (defaults `./data`,
 
 ## Building and running
 
-Examples build by default (`CONFIGMANAGER_BUILD_EXAMPLES=ON`) and register
-with CTest under the `examples.` prefix:
+Examples build by default in a top-level build (`CONFIGMANAGER_BUILD_EXAMPLES`
+defaults to `ON` there, and to `OFF` when the library is consumed via
+`add_subdirectory`/FetchContent) and register with CTest under the
+`examples.` prefix:
 
 ```sh
 cmake -S . -B build

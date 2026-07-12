@@ -54,8 +54,12 @@ rationale.
 * **Keys must be path-addressable** — non-empty, no `.` `[` `]` — or `load()`
   fails with `ParseError` ([ADR-021](Architecture.md#adr-021)).
 * **Formats differ in power; backends never guess.** A model the format cannot
-  represent fails `save()` with `SerializationError`; a document the model
-  cannot represent fails `load()` with `ParseError`.
+  represent fails `save()` with `SerializationError` (this includes `NaN` and
+  infinities, which neither JSON nor the XML mapping can represent); a
+  document the model cannot represent fails `load()` with `ParseError`.
+* **Nesting depth is bounded.** A document nested deeper than `kMaxTreeDepth`
+  (128, see [limitations](limitations.md)) fails `load()` with `ParseError`
+  before any model is built.
 * **Backends never throw** ([ADR-018](Architecture.md#adr-018)). Exceptions
   from parser libraries or stream operations (including streams with exception
   masks set) are caught inside and mapped to `ParseError` in `load()` /

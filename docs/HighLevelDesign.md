@@ -212,9 +212,15 @@ migrations.
 requires an `Object`, `push` requires an `Array`. Violating a precondition is
 a programming error (debug assertion; otherwise undefined behavior), not a
 recoverable failure — `ConfigValue` is a builder driven by factory and
-migration code, never by external data. The builder does not validate keys
-either; key validity (non-empty, no reserved characters) is enforced where a
-value crosses into a model: `fromValue` and subtree `set` (ADR-021).
+migration code, never by external data. `of()`'s two data-dependent
+preconditions — an unsigned value above `INT64_MAX`, a null C string — throw
+a logic error in **every** build rather than silently corrupting the value:
+inside a default factory the catalog boundary maps the exception to
+`MigrationFailed` (ADR-018), and `ConfigModel::set` checks both before
+calling `of()`, so the throw never crosses the `Result` API. The builder does
+not validate keys either; key validity (non-empty, no reserved characters) is
+enforced where a value crosses into a model: `fromValue` and subtree `set`
+(ADR-021).
 
 ### 4.2 Internal storage: a generation-checked arena
 
@@ -239,9 +245,10 @@ struct Node {
 
 class NodeArena {
     std::vector<Node>          nodes_;
-    std::vector<NodeId>        freeList_;
-    // allocate(): reuse a free slot (bump generation) or append
-    // free(node): mark dead, bump generation, return slot to freeList_
+    NodeId                     freeHead_;  // intrusive free list: dead nodes
+                                           // chain through their parent field
+    // allocate(): reuse the free-list head (generation already bumped) or append
+    // free(node): mark dead, bump generation, chain the slot onto the free list
 };
 ```
 
@@ -396,6 +403,15 @@ Key behaviors:
   that is not path-addressable — empty, or containing a reserved path
   character — with `InvalidPath` (ADR-021); the subtree `set` overload
   applies the same key check to the inserted value.
+* Tree depth is **bounded by `kMaxTreeDepth` (128)**, the root object at
+  depth 0. Several operations — subtree writes, extraction, destruction,
+  repair, backend serialization — recurse over the tree, so depth must be
+  bounded for them to be stack-safe. `fromValue` and the subtree `set` reject
+  deeper values with `InvalidPath` (for `set`, the inserted value's depth is
+  offset by the target path's segment count); backends reject deeper
+  persisted documents with `ParseError` before they reach a model. The
+  checks run while descending, so validation itself never recurses past the
+  limit even on a hostile input.
 * `clone()` provides the deep copy that `ConfigRuntime::synchronize` runs on.
 
 ### 4.5 ConfigPath (`config_path.hpp`)
@@ -602,8 +618,8 @@ public:
     Result<VersionId>   nextVersion(VersionId v) const;      // next registered version
     Result<ConfigModel> createDefault(VersionId v) const;    // factory ConfigValue -> fromValue
 
-    // ordered ascending; used by registry validation
-    const std::vector<VersionId>& versions() const noexcept;
+    // ordered ascending, built per call; used by registry validation
+    std::vector<VersionId> versions() const;
 };
 ```
 
@@ -671,10 +687,12 @@ public:
 
 1. Every registered version below the latest has a migration to the next
    registered version.
-2. No duplicate `(from,to)` edges.
-3. All edge endpoints exist in the catalog.
-4. Only adjacent edges (`to == catalog.nextVersion(from)`) are registered.
+2. All edge endpoints exist in the catalog.
+3. Only adjacent edges (`to == catalog.nextVersion(from)`) are registered.
    Adjacency is catalog order, not numeric `+1`.
+
+Duplicate `(from,to)` edges need no re-check here: `registerMigration`
+rejects them at registration.
 
 Failures return `MissingMigration` / `InvalidVersion`.
 

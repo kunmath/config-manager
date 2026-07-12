@@ -8,7 +8,7 @@ set_target_properties(configmanager_xml PROPERTIES EXPORT_NAME xml)
 
 target_include_directories(configmanager_xml PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(configmanager_xml PUBLIC configmanager::core)
 target_compile_features(configmanager_xml PUBLIC cxx_std_20)
 

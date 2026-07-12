@@ -35,6 +35,9 @@ class MigrationEngine {
   // successful no-op. A migration function that throws or returns an error is
   // reported as MigrationFailed with the step and original diagnostic in the
   // message.
+  //
+  // Migration functions run through the registry's stored callables, so
+  // state persists across steps and runs.
   Result<void> migrate(VersionedConfig& config, VersionId target);
 
  private:

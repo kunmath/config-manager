@@ -1,8 +1,8 @@
 #ifndef CONFIGMANAGER_CONFIG_MODEL_HPP_
 #define CONFIGMANAGER_CONFIG_MODEL_HPP_
 
+#include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <string_view>
 #include <type_traits>
@@ -16,6 +16,14 @@
 namespace configmanager {
 
 class NodeArena;  // internal storage (src/node_arena.hpp)
+
+// Maximum node depth in a model, with the root object at depth 0 (docs/
+// HighLevelDesign.md §4.4). Several operations — subtree writes, extraction,
+// destruction, repair, backend serialization — recurse over the tree, so
+// depth must be bounded for them to be stack-safe: a deeper write fails with
+// InvalidPath at the model boundary, and backends reject deeper persisted
+// documents with ParseError before they reach a model.
+inline constexpr std::size_t kMaxTreeDepth = 128;
 
 // Owning configuration tree (docs/HighLevelDesign.md §4.4). The root is always an
 // Object (ADR-020). Move-only: the model owns a heap arena that ConfigNode
@@ -62,22 +70,15 @@ class ConfigModel {
   Result<ConfigValue> getValue(std::string_view path) const;
 
   // Scalar upsert. Constrained to exclude ConfigValue so subtree insertion
-  // unambiguously selects the ConfigValue overload. Int is stored as
-  // std::int64_t (§4.4): an unsigned value that does not fit fails with
-  // InvalidType rather than silently wrapping.
+  // unambiguously selects the ConfigValue overload. ConfigValue::of's
+  // preconditions are checked first and fail with InvalidType, so its throw
+  // never crosses the Result API.
   template <typename T,
             typename = std::enable_if_t<
                 !std::is_same_v<std::decay_t<T>, ConfigValue>>>
   Result<void> set(std::string_view path, T value) {
-    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool> &&
-                  std::is_unsigned_v<T>) {
-      if (static_cast<std::uint64_t>(value) >
-          static_cast<std::uint64_t>(
-              std::numeric_limits<std::int64_t>::max())) {
-        return fail(ErrorCode::InvalidType,
-                    "unsigned integer value is not representable as Int "
-                    "(std::int64_t)");
-      }
+    if (const char* violation = ConfigValue::ofPreconditionViolation(value)) {
+      return fail(ErrorCode::InvalidType, violation);
     }
     return set(path, ConfigValue::of(std::move(value)));
   }

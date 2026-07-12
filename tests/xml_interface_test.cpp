@@ -1,6 +1,7 @@
 #include "configmanager/backends/xml_interface.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <sstream>
@@ -212,6 +213,57 @@ TEST(XmlInterfaceTest, DuplicateVersionAttributeIsParseError) {
   auto loaded = loadText(R"(<config version="1" version="2"/>)");
   ASSERT_FALSE(loaded);
   EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+}
+
+TEST(XmlInterfaceTest, DocumentBeyondMaxTreeDepthIsParseError) {
+  std::string document = R"(<config version="1">)";
+  for (std::size_t i = 0; i <= kMaxTreeDepth; ++i) {
+    document += "<a>";
+  }
+  document += "1";
+  for (std::size_t i = 0; i <= kMaxTreeDepth; ++i) {
+    document += "</a>";
+  }
+  document += "</config>";
+  auto loaded = loadText(document);
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+  EXPECT_NE(loaded.error().message.find("nesting depth"), std::string::npos);
+}
+
+TEST(XmlInterfaceTest, DocumentAtMaxTreeDepthLoads) {
+  std::string document = R"(<config version="1">)";
+  for (std::size_t i = 1; i < kMaxTreeDepth; ++i) {
+    document += "<a>";
+  }
+  document += "<a>1</a>";
+  for (std::size_t i = 1; i < kMaxTreeDepth; ++i) {
+    document += "</a>";
+  }
+  document += "</config>";
+  auto loaded = loadText(document);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+}
+
+TEST(XmlInterfaceTest, DuplicateTypeAttributeOnRootIsParseError) {
+  auto loaded =
+      loadText(R"(<config version="1" type="object" type="object"/>)");
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+}
+
+TEST(XmlInterfaceTest, TextOutsideRootElementIsParseError) {
+  auto leading = loadText("junk<config version=\"1\"/>");
+  ASSERT_FALSE(leading);
+  EXPECT_EQ(leading.error().code, ErrorCode::ParseError);
+
+  auto trailing = loadText("<config version=\"1\"/>trailing");
+  ASSERT_FALSE(trailing);
+  EXPECT_EQ(trailing.error().code, ErrorCode::ParseError);
+
+  // Whitespace around the root stays legal.
+  auto padded = loadText("\n  <config version=\"1\"/>\n");
+  EXPECT_TRUE(padded) << padded.error().message;
 }
 
 TEST(XmlInterfaceTest, VersionAttributeOnNonRootIsParseError) {

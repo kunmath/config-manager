@@ -2,6 +2,7 @@
 #include "configmanager/migration_registry.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -196,6 +197,26 @@ TEST(MigrationEngineTest, ThrowingMigrationIsMigrationFailed) {
   EXPECT_EQ(outcome.error().code, ErrorCode::MigrationFailed);
   EXPECT_NE(outcome.error().message.find("kaput"), std::string::npos);
   EXPECT_EQ(config.version, 1u);  // failed step never advanced the version
+}
+
+// The engine invokes the registry's stored callable directly (§8.2), never a
+// copy, so a stateful callback accumulates state across steps and runs.
+TEST(MigrationEngineTest, StatefulCallbackKeepsStateAcrossRuns) {
+  VersionCatalog catalog = makeCatalog({1, 2});
+  MigrationRegistry registry;
+  ASSERT_TRUE(registry.registerMigration(
+      1, 2, [count = 0](MigrationContext& ctx) mutable -> Result<void> {
+        return ctx.model().set("count", ++count);
+      }));
+  MigrationEngine engine(catalog, registry);
+
+  VersionedConfig first{1, ConfigModel()};
+  ASSERT_TRUE(engine.migrate(first, 2));
+  EXPECT_EQ(first.model.get<std::int64_t>("count").value(), 1);
+
+  VersionedConfig second{1, ConfigModel()};
+  ASSERT_TRUE(engine.migrate(second, 2));
+  EXPECT_EQ(second.model.get<std::int64_t>("count").value(), 2);
 }
 
 TEST(MigrationEngineTest, ReturnedErrorWrappedWithDiagnosticPreserved) {
