@@ -73,7 +73,9 @@ class ConfigModel {
   // Scalar upsert. Constrained to exclude ConfigValue so subtree insertion
   // unambiguously selects the ConfigValue overload. Int is stored as
   // std::int64_t (§4.4): an unsigned value that does not fit fails with
-  // InvalidType rather than silently wrapping.
+  // InvalidType rather than silently wrapping, and a null C string fails
+  // with InvalidType too — both are checked here, before ConfigValue::of,
+  // whose throwing preconditions must not escape the Result API.
   template <typename T,
             typename = std::enable_if_t<
                 !std::is_same_v<std::decay_t<T>, ConfigValue>>>
@@ -86,6 +88,12 @@ class ConfigModel {
         return fail(ErrorCode::InvalidType,
                     "unsigned integer value is not representable as Int "
                     "(std::int64_t)");
+      }
+    }
+    if constexpr (std::is_pointer_v<T>) {
+      if (value == nullptr) {
+        return fail(ErrorCode::InvalidType,
+                    "null C string is not a valid String value");
       }
     }
     return set(path, ConfigValue::of(std::move(value)));

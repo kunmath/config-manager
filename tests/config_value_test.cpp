@@ -1,6 +1,8 @@
 #include "configmanager/config_value.hpp"
 
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -56,6 +58,21 @@ TEST(ConfigValueTest, OfStringViewAndCString) {
   auto fromLiteral = ConfigValue::of("literal");
   EXPECT_EQ(fromLiteral.type(), NodeType::String);
   EXPECT_EQ(std::get<std::string>(fromLiteral.scalar()), "literal");
+}
+
+TEST(ConfigValueTest, OfUnsignedBeyondInt64ThrowsOutOfRange) {
+  EXPECT_THROW(ConfigValue::of(std::numeric_limits<std::uint64_t>::max()),
+               std::out_of_range);
+  // The largest storable unsigned value is fine.
+  auto max = ConfigValue::of(static_cast<std::uint64_t>(
+      std::numeric_limits<std::int64_t>::max()));
+  EXPECT_EQ(std::get<std::int64_t>(max.scalar()),
+            std::numeric_limits<std::int64_t>::max());
+}
+
+TEST(ConfigValueTest, OfNullCStringThrowsInvalidArgument) {
+  const char* null = nullptr;
+  EXPECT_THROW(ConfigValue::of(null), std::invalid_argument);
 }
 
 TEST(ConfigValueTest, ObjectMembersKeepInsertionOrder) {

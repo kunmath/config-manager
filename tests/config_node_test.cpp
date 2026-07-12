@@ -224,5 +224,20 @@ TEST(ConfigNodeTest, InexactDoubleToFloatIsInvalidType) {
   EXPECT_EQ(model.get<float>("half").value(), 0.5f);
 }
 
+TEST(ConfigNodeTest, DoubleReadsWidenToLongDouble) {
+  // long double's limits exceed double's on x86-64; the range check must not
+  // narrow them to double.
+  ConfigModel model;
+  ASSERT_TRUE(model.set("big", 1e300));
+  // Not 1e300L: the stored value is the *double* nearest 1e300, widened.
+  EXPECT_EQ(model.get<long double>("big").value(),
+            static_cast<long double>(1e300));
+  ASSERT_TRUE(model.set("pi", 3.141592653589793));
+  EXPECT_EQ(model.get<long double>("pi").value(),
+            static_cast<long double>(3.141592653589793));
+  ASSERT_TRUE(model.set("nan", std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_TRUE(std::isnan(model.get<long double>("nan").value()));
+}
+
 }  // namespace
 }  // namespace configmanager

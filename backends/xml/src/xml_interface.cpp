@@ -439,6 +439,22 @@ Result<void> appendItems(pugi::xml_node element, const ConfigNode& array) {
   return {};
 }
 
+// Named appends need one more check beyond the handle: pugixml can return a
+// live node/attribute whose internal set_name() failed, observable as an
+// empty name (no caller here passes an empty name).
+pugi::xml_node appendNamedChild(pugi::xml_node parent, const char* name) {
+  pugi::xml_node child = checkAlloc(parent.append_child(name));
+  checkAlloc(child.name()[0] != '\0');
+  return child;
+}
+
+pugi::xml_attribute appendNamedAttribute(pugi::xml_node element,
+                                         const char* name) {
+  pugi::xml_attribute attribute = checkAlloc(element.append_attribute(name));
+  checkAlloc(attribute.name()[0] != '\0');
+  return attribute;
+}
+
 void setElementText(pugi::xml_node element, const std::string& text) {
   checkAlloc(
       checkAlloc(element.append_child(pugi::node_pcdata)).set_value(
@@ -446,7 +462,7 @@ void setElementText(pugi::xml_node element, const std::string& text) {
 }
 
 void setTypeAttribute(pugi::xml_node element, const char* type) {
-  checkAlloc(checkAlloc(element.append_attribute(kTypeAttr)).set_value(type));
+  checkAlloc(appendNamedAttribute(element, kTypeAttr).set_value(type));
 }
 
 Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
@@ -457,7 +473,7 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
                     "' is not a valid XML element name (this backend admits "
                     "ASCII names matching [A-Za-z_][A-Za-z0-9_-]*)");
   }
-  pugi::xml_node element = checkAlloc(parent.append_child(name.c_str()));
+  pugi::xml_node element = appendNamedChild(parent, name.c_str());
   switch (node.type()) {
     case NodeType::Null:
       setTypeAttribute(element, "null");
@@ -620,8 +636,8 @@ Result<void> XmlInterface::save(const VersionedConfig& config,
     // is a root *attribute*, outside the model's key space, so a model
     // member named "version" is a plain child element.
     pugi::xml_document doc;
-    pugi::xml_node root = checkAlloc(doc.append_child(kRootName));
-    checkAlloc(checkAlloc(root.append_attribute(kVersionAttr))
+    pugi::xml_node root = appendNamedChild(doc, kRootName);
+    checkAlloc(appendNamedAttribute(root, kVersionAttr)
                    .set_value(static_cast<unsigned long long>(config.version)));
     Result<void> appended = appendMembers(root, config.model.root());
     if (!appended) {

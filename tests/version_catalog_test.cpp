@@ -1,6 +1,7 @@
 #include "configmanager/version_catalog.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -103,6 +104,23 @@ TEST(VersionCatalogTest, CreateDefaultAdoptsFactoryTree) {
   auto model = catalog.createDefault(1);
   ASSERT_TRUE(model);
   EXPECT_EQ(model->get<std::int64_t>("timeout").value(), 30);
+}
+
+// ConfigValue::of throws on its data-dependent preconditions (out-of-range
+// unsigned, null C string); inside a factory that maps to MigrationFailed
+// like any other callback exception (ADR-018), never a corrupted default.
+TEST(VersionCatalogTest, FactoryViolatingOfPreconditionIsMigrationFailed) {
+  VersionCatalog catalog;
+  ASSERT_TRUE(catalog.registerVersion(
+      {1, [] {
+         ConfigValue root = ConfigValue::object();
+         root.set("u",
+                  ConfigValue::of(std::numeric_limits<std::uint64_t>::max()));
+         return root;
+       }}));
+  auto model = catalog.createDefault(1);
+  ASSERT_FALSE(model);
+  EXPECT_EQ(model.error().code, ErrorCode::MigrationFailed);
 }
 
 TEST(VersionCatalogTest, CreateDefaultForUnknownVersionIsInvalidVersion) {

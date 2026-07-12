@@ -212,9 +212,15 @@ migrations.
 requires an `Object`, `push` requires an `Array`. Violating a precondition is
 a programming error (debug assertion; otherwise undefined behavior), not a
 recoverable failure — `ConfigValue` is a builder driven by factory and
-migration code, never by external data. The builder does not validate keys
-either; key validity (non-empty, no reserved characters) is enforced where a
-value crosses into a model: `fromValue` and subtree `set` (ADR-021).
+migration code, never by external data. `of()`'s two data-dependent
+preconditions — an unsigned value above `INT64_MAX`, a null C string — throw
+a logic error in **every** build rather than silently corrupting the value:
+inside a default factory the catalog boundary maps the exception to
+`MigrationFailed` (ADR-018), and `ConfigModel::set` checks both before
+calling `of()`, so the throw never crosses the `Result` API. The builder does
+not validate keys either; key validity (non-empty, no reserved characters) is
+enforced where a value crosses into a model: `fromValue` and subtree `set`
+(ADR-021).
 
 ### 4.2 Internal storage: a generation-checked arena
 

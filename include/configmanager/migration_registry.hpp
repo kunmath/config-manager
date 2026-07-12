@@ -51,6 +51,11 @@ class MigrationRegistry {
   // Duplicate (from,to) -> InvalidVersion. An empty MigrationFn is a
   // registration error, surfaced immediately with MigrationFailed rather
   // than at first execution.
+  //
+  // Must not be called while MigrationEngine::migrate() is executing over
+  // this registry — including from inside a migration function: the engine
+  // invokes the stored callable in place, and registration may reallocate
+  // the edge storage and destroy it mid-execution (undefined behavior).
   Result<void> registerMigration(VersionId from, VersionId to, MigrationFn fn);
 
   // Absent edge -> MissingMigration. The pointer stays valid until the next

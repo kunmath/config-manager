@@ -103,10 +103,14 @@ Result<T> convertScalar(const Scalar& scalar) {
         return static_cast<T>(*value);  // NaN converts to NaN losslessly
       }
       // Out-of-range finite values must not reach the cast: narrowing a
-      // double outside T's finite range is undefined behavior.
+      // double outside T's finite range is undefined behavior. Compared in
+      // long double so T's limits only ever widen (converting a wider T's
+      // limits to double would itself be out of range).
       if (std::isfinite(*value) &&
-          (*value < static_cast<double>(std::numeric_limits<T>::lowest()) ||
-           *value > static_cast<double>(std::numeric_limits<T>::max()))) {
+          (static_cast<long double>(*value) <
+               static_cast<long double>(std::numeric_limits<T>::lowest()) ||
+           static_cast<long double>(*value) >
+               static_cast<long double>(std::numeric_limits<T>::max()))) {
         return fail(ErrorCode::InvalidType,
                     "Double value is outside the requested type's range");
       }

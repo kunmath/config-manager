@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -35,9 +36,10 @@ using Scalar = std::variant<std::monostate,  // Null
 //
 // set()/push() are builder preconditions, not fallible operations: set()
 // requires an Object, push() requires an Array. Violating a precondition is a
-// programming error (debug assertion), not a recoverable failure. Key
-// validity (ADR-021) is enforced where a value crosses into a model, not
-// here.
+// programming error (debug assertion), not a recoverable failure. of()'s two
+// data-dependent preconditions throw a logic error in every build (see
+// below). Key validity (ADR-021) is enforced where a value crosses into a
+// model, not here.
 class ConfigValue {
  public:
   ConfigValue() = default;  // Null
@@ -47,8 +49,12 @@ class ConfigValue {
 
   // Accepts an explicit supported set only: an unconstrained fallback would
   // silently stringify arbitrary types (or narrow long double), and any
-  // failure of these constructions is a compile error or a builder
-  // precondition, never a silently corrupted value.
+  // failure of these constructions is a compile error or a thrown logic
+  // error, never a silently corrupted value. The two data-dependent
+  // preconditions — an unsigned value beyond Int's range, a null C string —
+  // throw in every build: inside a default factory the catalog boundary maps
+  // the exception to MigrationFailed (ADR-018), and ConfigModel::set checks
+  // both before calling of(), so neither throw crosses the Result API.
   template <typename T>
   static ConfigValue of(T scalar) {
     constexpr bool kIsString =
@@ -65,12 +71,13 @@ class ConfigValue {
       value.scalar_ = scalar;
     } else if constexpr (std::is_integral_v<T>) {
       if constexpr (std::is_unsigned_v<T>) {
-        // Builder precondition: Int is stored as std::int64_t. The fallible
-        // boundary for out-of-range values is ConfigModel::set.
-        assert(static_cast<std::uint64_t>(scalar) <=
-                   static_cast<std::uint64_t>(
-                       std::numeric_limits<std::int64_t>::max()) &&
-               "ConfigValue::of: unsigned value exceeds Int range");
+        // Int is stored as std::int64_t: a larger value would silently wrap.
+        if (static_cast<std::uint64_t>(scalar) >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+          throw std::out_of_range(
+              "ConfigValue::of: unsigned value exceeds Int range");
+        }
       }
       value.type_ = NodeType::Int;
       value.scalar_ = static_cast<std::int64_t>(scalar);
@@ -79,8 +86,10 @@ class ConfigValue {
       value.scalar_ = static_cast<double>(scalar);
     } else {
       if constexpr (std::is_pointer_v<T>) {
-        assert(scalar != nullptr &&
-               "ConfigValue::of: C string must not be null");
+        if (scalar == nullptr) {
+          throw std::invalid_argument(
+              "ConfigValue::of: C string must not be null");
+        }
       }
       value.type_ = NodeType::String;
       value.scalar_ = std::string(std::move(scalar));

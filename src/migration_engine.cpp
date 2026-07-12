@@ -64,12 +64,12 @@ Result<void> MigrationEngine::migrate(VersionedConfig& config,
     MigrationContext ctx(config.model, current, *next);
     Result<void> applied;
     try {
-      // Copied out of the registry: a migration that (perversely) registers
-      // new edges would reallocate the registry's storage and destroy the
-      // std::function mid-execution. The copy itself runs user code (the
-      // callable's copy constructor), so it stays inside the try (ADR-018).
-      const MigrationFn apply = (*edge)->apply;
-      applied = apply(ctx);
+      // Invoked through the registry's stored callable (§8.2), so a stateful
+      // callback keeps its state across steps and runs. Consequently a
+      // migration must not register new edges mid-execution: that would
+      // reallocate the registry's storage and destroy the running callable
+      // (registerMigration documents the pointer invalidation).
+      applied = ((*edge)->apply)(ctx);
     } catch (const std::bad_alloc&) {
       throw;  // memory exhaustion is not a recoverable config error (ADR-018)
     } catch (const std::exception& e) {

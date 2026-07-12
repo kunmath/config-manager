@@ -146,6 +146,15 @@ TEST(ConfigModelTest, UnsignedWriteAboveInt64MaxFailsUnchanged) {
   EXPECT_EQ(model.get<std::uint64_t>("ok").value(), 42u);
 }
 
+TEST(ConfigModelTest, NullCStringWriteFailsUnchanged) {
+  ConfigModel model;
+  const char* null = nullptr;
+  auto result = model.set("s", null);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code, ErrorCode::InvalidType);
+  EXPECT_FALSE(model.contains("s"));
+}
+
 TEST(ConfigModelTest, DoubleToUnsignedAdmitsExactValuesAboveInt64Max) {
   ConfigModel model;
   ASSERT_TRUE(model.set("big", 9223372036854775808.0));  // 2^63, exact

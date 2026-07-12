@@ -43,7 +43,20 @@ set_target_properties(configmanager_core PROPERTIES EXPORT_NAME core)
 target_include_directories(configmanager_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(configmanager_core PUBLIC tl::expected)
+# A fetched tl-expected installs its headers into this project's includedir
+# (already on core's INSTALL_INTERFACE), but its exported package hardcodes
+# `include` and breaks under a custom CMAKE_INSTALL_INCLUDEDIR — so keep the
+# target out of the exported link interface and skip its find_dependency
+# (same rationale as the backends' nlohmann/pugixml handling). A system copy
+# is a real usage requirement the installed package must resolve downstream.
+if(tl-expected_SOURCE_DIR)
+  target_link_libraries(configmanager_core PUBLIC
+    $<BUILD_INTERFACE:tl::expected>)
+  set(CONFIGMANAGER_FIND_TLEXPECTED FALSE)
+else()
+  target_link_libraries(configmanager_core PUBLIC tl::expected)
+  set(CONFIGMANAGER_FIND_TLEXPECTED TRUE)
+endif()
 target_compile_features(configmanager_core PUBLIC cxx_std_20)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

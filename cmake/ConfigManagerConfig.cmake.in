@@ -1,9 +1,22 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(tl-expected)
+
+# tl-expected is a usage requirement of every component, but only when it was
+# a system copy at build time; a fetched copy ships its headers inside this
+# package's include directory and needs no find_dependency.
+if(@CONFIGMANAGER_FIND_TLEXPECTED@)
+  find_dependency(tl-expected)
+endif()
+
+# pugixml is a link dependency of the xml component only (and only when the
+# backend was built against a system pugixml): consumers of other components
+# must not fail on its absence.
 if(@CONFIGMANAGER_FIND_PUGIXML@)
-  find_dependency(pugixml 1.14)
+  if(NOT ConfigManager_FIND_COMPONENTS
+     OR "xml" IN_LIST ConfigManager_FIND_COMPONENTS)
+    find_dependency(pugixml 1.14)
+  endif()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ConfigManagerTargets.cmake")
