@@ -178,7 +178,7 @@ TEST(ConfigNodeTest, HandlesWorkOnClonedModelIndependently) {
   EXPECT_EQ(cloned.as<std::int64_t>().value(), 1);
 }
 
-// ---- Scalar conversion edge cases (docs/HighLevelDesign.md §4.4) --------------
+// ---- Scalar conversion edge cases (docs/DetailedDesign.md §4.4) ----------------
 
 TEST(ConfigNodeTest, NonFiniteDoublesReadBackAsDouble) {
   ConfigModel model;

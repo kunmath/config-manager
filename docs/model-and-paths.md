@@ -118,7 +118,7 @@ replacing a container's contents removes its previous descendants, whose
 handles become detectably invalid.
 
 Full details: [Architecture.md § ConfigNode Lifetime](Architecture.md#confignode-lifetime)
-and the storage design in [HighLevelDesign.md §4](HighLevelDesign.md#4-the-configuration-data-model).
+and the storage design in [DetailedDesign.md §4](DetailedDesign.md#4-the-configuration-data-model).
 
 ## Thread safety
 

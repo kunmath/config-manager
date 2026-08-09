@@ -18,14 +18,14 @@ namespace configmanager {
 class NodeArena;  // internal storage (src/node_arena.hpp)
 
 // Maximum node depth in a model, with the root object at depth 0 (docs/
-// HighLevelDesign.md §4.4). Several operations — subtree writes, extraction,
+// DetailedDesign.md §4.4). Several operations — subtree writes, extraction,
 // destruction, repair, backend serialization — recurse over the tree, so
 // depth must be bounded for them to be stack-safe: a deeper write fails with
 // InvalidPath at the model boundary, and backends reject deeper persisted
 // documents with ParseError before they reach a model.
 inline constexpr std::size_t kMaxTreeDepth = 128;
 
-// Owning configuration tree (docs/HighLevelDesign.md §4.4). The root is always an
+// Owning configuration tree (docs/DetailedDesign.md §4.4). The root is always an
 // Object (ADR-020). Move-only: the model owns a heap arena that ConfigNode
 // handles reference, so moving the model keeps every handle valid, while
 // destroying it (or move-assigning onto it) invalidates them undetectably.

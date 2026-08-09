@@ -33,7 +33,7 @@ design decisions with an ADR behind them, not gaps waiting to be filled.
 * **Tree depth is capped at `kMaxTreeDepth` (128).** Deeper writes fail with
   `InvalidPath` and deeper persisted documents fail `load()` with
   `ParseError`, keeping the library's recursive tree traversals stack-safe
-  ([HighLevelDesign.md §4.4](HighLevelDesign.md#44-configmodel-public-api-config_modelhpp)).
+  ([DetailedDesign.md §4.4](DetailedDesign.md#44-configmodel-public-api-config_modelhpp)).
 * **Non-finite doubles do not serialize.** A model can hold `NaN` or
   infinities, but JSON and XML have no representation for them: `save()`
   fails with `SerializationError` instead of silently corrupting the value.
@@ -44,7 +44,7 @@ design decisions with an ADR behind them, not gaps waiting to be filled.
   precedence over the character reference the XML spec would allow.
 * **YAML and INI backends are not yet implemented** (planned; their mappings
   are already specified in
-  [HighLevelDesign.md §6.1](HighLevelDesign.md#61-format-mappings)).
+  [DetailedDesign.md §6.1](DetailedDesign.md#61-format-mappings)).
 
 ## Operational caveats
 

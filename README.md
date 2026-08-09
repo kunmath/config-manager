@@ -186,7 +186,7 @@ Start with the [documentation index](docs/README.md).
 * [FAQ](docs/faq.md) · [Limitations](docs/limitations.md)
 
 Design rationale lives in [docs/Architecture.md](docs/Architecture.md)
-(principles and ADRs) and [docs/HighLevelDesign.md](docs/HighLevelDesign.md)
+(principles and ADRs) and [docs/DetailedDesign.md](docs/DetailedDesign.md)
 (concrete types, format mappings, error-code table). The guides link into both
 rather than restating them.
 

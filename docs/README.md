@@ -29,7 +29,7 @@ cannot drift from the implementation.
 * [Architecture.md](Architecture.md) — architectural principles, component
   responsibilities, and the Architectural Decision Records (ADR-001 … ADR-022)
   the guides cite.
-* [HighLevelDesign.md](HighLevelDesign.md) — the implementation contract:
+* [DetailedDesign.md](DetailedDesign.md) — the implementation contract:
   concrete C++ types, the internal storage model, exact format mappings
   (§6.1), the error-code mapping table (§10), and the build/dependency
   strategy.

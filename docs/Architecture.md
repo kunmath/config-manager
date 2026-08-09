@@ -263,7 +263,7 @@ Formats differ in expressive power. A model that a format cannot
 represent fails save() with `SerializationError`; a document that the
 model cannot represent fails load() with `ParseError`. Each backend's
 exact mapping — including the restricted XML and INI mappings — is
-defined in the design (HighLevelDesign.md §6.1). Backends never guess.
+defined in the design (DetailedDesign.md §6.1). Backends never guess.
 
 Object keys are unique. A document carrying duplicates — duplicate
 JSON/YAML keys, repeated sibling elements under an XML object, duplicate

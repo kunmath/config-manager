@@ -1,4 +1,4 @@
-# ConfigManager High-Level Design
+# ConfigManager Detailed Design
 
 This document translates `Architecture.md` into an implementable design. It is
 intentionally **data-model and API focused**: it defines the concrete C++ types,

@@ -399,7 +399,7 @@ TEST(ConfigModelTest, CloneIsIndependentDeepCopy) {
   EXPECT_FALSE(model.contains("c"));
 }
 
-// ---- Maximum nesting depth (HLD §4.4) --------------------------------------------
+// ---- Maximum nesting depth (Detailed Design §4.4) --------------------------------
 
 // A value tree whose deepest node sits `wraps` levels below its root.
 ConfigValue nestedValue(std::size_t wraps) {
@@ -450,7 +450,7 @@ TEST(ConfigModelTest, DeepPathWritesRespectMaxTreeDepth) {
   EXPECT_EQ(tooDeep.error().code, ErrorCode::InvalidPath);
 }
 
-// ---- VersionedConfig (HLD §5) ---------------------------------------------------
+// ---- VersionedConfig (Detailed Design §5) ---------------------------------------
 
 TEST(VersionedConfigTest, MoveOnlyUnitCarriesVersionAndModel) {
   ConfigModel model;

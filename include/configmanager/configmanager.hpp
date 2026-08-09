@@ -2,7 +2,7 @@
 #define CONFIGMANAGER_CONFIGMANAGER_HPP_
 
 // Umbrella include. Components are added here as they land
-// (docs/HighLevelDesign.md §13 implementation order).
+// (docs/DetailedDesign.md §13 implementation order).
 
 #include "configmanager/config_interface.hpp"
 #include "configmanager/config_model.hpp"

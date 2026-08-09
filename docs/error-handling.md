@@ -45,7 +45,7 @@ call sites that produce or forward errors.
 | `InvalidVersion` | Unknown/duplicate/unregistered version anywhere; missing or malformed version carrier in `load()`; empty catalog |
 
 The exhaustive situation-by-situation table is
-[HighLevelDesign.md §10](HighLevelDesign.md#10-error-code-mapping).
+[DetailedDesign.md §10](DetailedDesign.md#10-error-code-mapping).
 
 Codes are for programmatic dispatch; `message` carries the specifics. A failed
 migration step, for example, is always `MigrationFailed`, with the step and the

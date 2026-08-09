@@ -16,7 +16,7 @@ align with the design docs, bring tests.**
   and better examples are always fair game.
 * **Pick up planned work** — the YAML and INI backends are specified but not
   yet implemented (see
-  [docs/HighLevelDesign.md §6.1](docs/HighLevelDesign.md#61-format-mappings)
+  [docs/DetailedDesign.md §6.1](docs/DetailedDesign.md#61-format-mappings)
   and the
   [writing-your-own-backend checklist](docs/serialization-backends.md#writing-your-own-backend));
   the JSON and XML backends are the structural templates.
@@ -30,7 +30,7 @@ This project is design-driven. Two documents are normative:
   a proposal that contradicts one (say, adding downgrade migrations against
   ADR-008, or implicit synchronization against ADR-002) needs to argue for
   changing the ADR itself, not just add code.
-* [docs/HighLevelDesign.md](docs/HighLevelDesign.md) — the implementation
+* [docs/DetailedDesign.md](docs/DetailedDesign.md) — the implementation
   contract: concrete types, format mappings, and the error-code table.
 
 Also note what ConfigManager is intentionally **not** (schema validation,
@@ -67,11 +67,11 @@ is a valid outcome.
   file per component under `tests/`; backend changes extend the per-format
   round-trip suite (see `tests/json_interface_test.cpp` /
   `tests/xml_interface_test.cpp` for the expected coverage, and
-  [docs/HighLevelDesign.md §12](docs/HighLevelDesign.md#12-testing-strategy-data-model--api-first)
+  [docs/DetailedDesign.md §12](docs/DetailedDesign.md#12-testing-strategy-data-model--api-first)
   for the test matrix).
 * **Update the docs you touch.** A behavior change usually lands in one of the
   [docs/ guides](docs/README.md); a contract change must also update
-  Architecture.md / HighLevelDesign.md — flag that explicitly in the PR, since
+  Architecture.md / DetailedDesign.md — flag that explicitly in the PR, since
   it needs design review.
 * **Examples must keep passing** — they assert their own outcomes and run in
   CI via CTest.
@@ -100,7 +100,7 @@ Useful option matrix checks when touching CMake or backends:
   [ADR-018](docs/Architecture.md#adr-018) — `std::bad_alloc` rethrown first,
   `std::exception` preserves `what()`, catch-all gets a fixed message.
 * Error codes follow the mapping table in
-  [docs/HighLevelDesign.md §10](docs/HighLevelDesign.md#10-error-code-mapping);
+  [docs/DetailedDesign.md §10](docs/DetailedDesign.md#10-error-code-mapping);
   don't invent new codes without a design issue.
 * Match the surrounding code: one public header per component, tests mirror
   component names, comments explain contracts rather than restating code.
@@ -120,7 +120,7 @@ option wired in the root `CMakeLists.txt`, the dependency pinned in
 `cmake/Dependencies.cmake` (find_package first, FetchContent fallback),
 install/export into `ConfigManagerTargets`, and the round-trip test suite.
 For YAML and INI, the normative mapping already exists in
-[docs/HighLevelDesign.md §6.1](docs/HighLevelDesign.md#61-format-mappings) —
+[docs/DetailedDesign.md §6.1](docs/DetailedDesign.md#61-format-mappings) —
 implement that, don't design a new one.
 
 ## License

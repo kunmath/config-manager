@@ -7,7 +7,7 @@
 namespace configmanager {
 
 // The unit that flows through load -> inspect -> synchronize -> save
-// (docs/HighLevelDesign.md §5). `version` is the single source of truth for the
+// (docs/DetailedDesign.md §5). `version` is the single source of truth for the
 // configuration's version; the model never carries version metadata.
 // Move-only (because ConfigModel is).
 struct VersionedConfig {

@@ -71,7 +71,7 @@ rationale.
 ## Format mappings
 
 The authoritative, normative mapping for every format is
-[HighLevelDesign.md §6.1](HighLevelDesign.md#61-format-mappings). Highlights:
+[DetailedDesign.md §6.1](DetailedDesign.md#61-format-mappings). Highlights:
 
 ### JSON
 
