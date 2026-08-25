@@ -89,12 +89,16 @@ SyncState ConfigRuntime::inspect(const VersionedConfig& cfg,
   return SyncState{cfg.version, supported, status};
 }
 
+bool ConfigRuntime::supportsVersion(VersionId version) const {
+  return catalog_.contains(version);
+}
+
 Result<SyncStatus> ConfigRuntime::synchronize(VersionedConfig& cfg,
                                               VersionId supported) {
   if (!catalog_.contains(supported)) {
-    return fail(ErrorCode::InvalidVersion,
-                "supported version " + std::to_string(supported) +
-                    " is not registered");
+    return fail(ErrorCode::InvalidVersion, "supported version " +
+                                               std::to_string(supported) +
+                                               " is not registered");
   }
   const SyncState state = inspect(cfg, supported);
   if (state.status == SyncStatus::DowngradeRequired) {
@@ -103,9 +107,9 @@ Result<SyncStatus> ConfigRuntime::synchronize(VersionedConfig& cfg,
   if (state.status == SyncStatus::UpgradeRequired &&
       !catalog_.contains(cfg.version)) {
     // Unknown persisted version: fail before any work, not mid-chain.
-    return fail(ErrorCode::InvalidVersion,
-                "persisted version " + std::to_string(cfg.version) +
-                    " is not registered");
+    return fail(ErrorCode::InvalidVersion, "persisted version " +
+                                               std::to_string(cfg.version) +
+                                               " is not registered");
   }
 
   VersionedConfig working{cfg.version, cfg.model.clone()};  // 1. copy

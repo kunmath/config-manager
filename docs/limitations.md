@@ -9,12 +9,15 @@ design decisions with an ADR behind them, not gaps waiting to be filled.
   backfills missing keys but never checks types, ranges, or shapes. Pair the
   library with any validation library via the
   [direct migration workflow](versioning-and-migration.md#direct-migration-advanced).
-* **No storage layer** ([ADR-004](Architecture.md#adr-004)). Backends operate
-  on streams; the library never opens, writes, or renames files. Atomic-save
-  strategies are the application's responsibility.
+* **No general storage layer** ([ADR-004](Architecture.md#adr-004)). Backends
+  operate on streams; ordinary storage remains the application's
+  responsibility. The optional
+  [firmware checkpoint component](checkpoint-recovery.md) is a narrow,
+  explicit exception for safe downgrade recovery ([ADR-023](Architecture.md#adr-023)).
 * **No downgrades** ([ADR-008](Architecture.md#adr-008)). Migrations are
   forward-only; a newer configuration is reported as `DowngradeRequired` and
-  left untouched.
+  left untouched. Checkpoint recovery restores older state and migrates it
+  forward; it does not reverse-migrate the newer file.
 * **No automatic synchronization** ([ADR-002](Architecture.md#adr-002)).
   Nothing migrates unless `synchronize()` (or `migrate()`) is called.
 

@@ -43,6 +43,7 @@ call sites that produce or forward errors.
 | `MigrationFailed` | A migration step returned an error or threw; a user callback threw; a null callable at registration |
 | `MissingMigration` | A required adjacent migration is not registered |
 | `InvalidVersion` | Unknown/duplicate/unregistered version anywhere; missing or malformed version carrier in `load()`; empty catalog |
+| `StorageError` | Optional checkpoint component cannot open, enumerate, copy, replace, or prune filesystem data |
 
 The exhaustive situation-by-situation table is
 [DetailedDesign.md §10](DetailedDesign.md#10-error-code-mapping).
@@ -67,6 +68,10 @@ At every boundary the catch order is fixed: `std::bad_alloc` is rethrown
 (memory exhaustion is not a recoverable configuration error); exceptions
 derived from `std::exception` preserve `what()` in `Error::message`; anything
 else gets a fixed fallback message naming the boundary.
+
+The optional checkpoint component applies the same boundary. Backend load/save
+exceptions map to `ParseError`/`SerializationError`; filesystem and path
+exceptions map to `StorageError`.
 
 ## Two error channels to know about
 

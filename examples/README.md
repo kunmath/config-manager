@@ -84,6 +84,20 @@ its phases on what is XML-specific:
 Usage: `04_sensorbridge_xml [data_dir] [out_dir]` (defaults `./data`,
 `./out`, same convention as 03).
 
+## 05_firmware_rollback — recover config after firmware downgrade
+
+Requires JSON and the optional checkpoint component. The example starts with a
+v1 device config containing operator overrides, captures its exact bytes, and
+upgrades the canonical file to v3. It then simulates firmware supporting only
+v2: `synchronize()` refuses the v3 file, `cpPrepareRestore()` loads the v1
+checkpoint and migrates it forward to v2, and `cpCommit()` replaces the
+canonical file only after the prepared model is checked. The example also
+shows that v3-only settings are intentionally absent after destructive
+rollback.
+
+Usage: `05_firmware_rollback [data_dir] [out_dir]` (defaults `./data`,
+`./out`, same convention as 03).
+
 ## Building and running
 
 Examples build by default in a top-level build (`CONFIGMANAGER_BUILD_EXAMPLES`

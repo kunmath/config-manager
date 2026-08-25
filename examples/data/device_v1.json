@@ -1,0 +1,5 @@
+{
+  "__version": 1,
+  "device_name": "line-sensor-7",
+  "sample_period_ms": 250
+}

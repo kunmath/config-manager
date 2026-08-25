@@ -35,3 +35,11 @@ if(CONFIGMANAGER_BUILD_XML)
   target_link_libraries(04_sensorbridge_xml PRIVATE configmanager::xml)
   configure_file(data/sensorbridge_v1.xml data/sensorbridge_v1.xml COPYONLY)
 endif()
+
+if(CONFIGMANAGER_BUILD_JSON AND CONFIGMANAGER_BUILD_CHECKPOINT)
+  configmanager_add_example(05_firmware_rollback)
+  target_link_libraries(05_firmware_rollback PRIVATE
+    configmanager::json
+    configmanager::checkpoint)
+  configure_file(data/device_v1.json data/device_v1.json COPYONLY)
+endif()

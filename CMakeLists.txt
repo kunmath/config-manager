@@ -20,6 +20,8 @@ option(CONFIGMANAGER_BUILD_JSON
   "Build the JSON serialization backend (configmanager::json)" ON)
 option(CONFIGMANAGER_BUILD_XML
   "Build the XML serialization backend (configmanager::xml)" ON)
+option(CONFIGMANAGER_BUILD_CHECKPOINT
+  "Build firmware downgrade checkpoints (configmanager::checkpoint)" ON)
 option(CONFIGMANAGER_BUILD_EXAMPLES "Build ConfigManager example programs"
   ${PROJECT_IS_TOP_LEVEL})
 
@@ -69,6 +71,9 @@ if(CONFIGMANAGER_BUILD_JSON)
 endif()
 if(CONFIGMANAGER_BUILD_XML)
   add_subdirectory(backends/xml)
+endif()
+if(CONFIGMANAGER_BUILD_CHECKPOINT)
+  add_subdirectory(checkpoint)
 endif()
 
 # ---- Tests & examples (both register with CTest) -------------------------------

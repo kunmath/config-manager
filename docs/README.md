@@ -13,6 +13,7 @@ design documents at the bottom of this page.
 | [The data model and paths](model-and-paths.md) | `ConfigModel`, `ConfigValue`, `ConfigNode`, the path grammar, upsert rules, strict scalar conversion, handle lifetime |
 | [Versioning and migrations](versioning-and-migration.md) | `VersionCatalog`, `MigrationRegistry`, writing migration functions, direct use of `MigrationEngine` |
 | [Synchronization and repair](synchronization.md) | `ConfigRuntime`, `inspect()`/`synchronize()`, the transactional pipeline, what repair does and does not do |
+| [Firmware downgrade checkpoints](checkpoint-recovery.md) | Optional filesystem checkpoints that restore older state and migrate it forward after firmware rollback |
 | [Serialization backends](serialization-backends.md) | The `IConfigInterface` contract, per-format mappings and version carriers, writing your own backend |
 | [Error handling](error-handling.md) | `Result<T>`, the `ErrorCode` table, exception boundaries |
 | [FAQ](faq.md) | Common questions |
@@ -27,9 +28,9 @@ cannot drift from the implementation.
 ## Design documents
 
 * [Architecture.md](Architecture.md) — architectural principles, component
-  responsibilities, and the Architectural Decision Records (ADR-001 … ADR-022)
+  responsibilities, and the Architectural Decision Records (ADR-001 … ADR-023)
   the guides cite.
 * [DetailedDesign.md](DetailedDesign.md) — the implementation contract:
   concrete C++ types, the internal storage model, exact format mappings
-  (§6.1), the error-code mapping table (§10), and the build/dependency
+  (§6.1), checkpoint component (§9A), error-code mapping (§10), and the build/dependency
   strategy.

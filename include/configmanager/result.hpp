@@ -17,6 +17,7 @@ enum class ErrorCode {
   MigrationFailed,
   MissingMigration,
   InvalidVersion,
+  StorageError,
 };
 
 struct Error {

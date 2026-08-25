@@ -35,6 +35,9 @@ version is registered in the catalog. That validation happens in
 `synchronize()`, which can therefore fail with `InvalidVersion` for a pairing
 `inspect()` reported as `UpgradeRequired`.
 
+Use `supportsVersion(version)` for a side-effect-free catalog membership check.
+Unlike `createDefault()`, it never invokes a default factory.
+
 There is no failure status: failures travel through `Result`'s error channel.
 
 ## synchronize()
@@ -78,7 +81,9 @@ configuration is newer than `supported`, `synchronize()` returns
 version is registered, since files written by newer application versions are
 expected to carry versions this build does not know. The application decides
 what to do (refuse to start, run read-only, …); the one thing it should not do
-is save over the newer file.
+is save over the newer file. Applications that need firmware rollback can use
+the optional [checkpoint recovery](checkpoint-recovery.md) component to restore
+older state and migrate it forward to the supported version before committing.
 
 ## Repair
 
@@ -131,7 +136,9 @@ if (!config) {
 }
 auto status = runtime->synchronize(*config, kSupported);
 if (!status) { /* refuse to start; file is untouched */ }
-if (*status == cfg::SyncStatus::DowngradeRequired) { /* newer file: don't save */ }
+if (*status == cfg::SyncStatus::DowngradeRequired) {
+  /* newer file: don't save; optionally prepare checkpoint recovery */
+}
 saveFile(*config, path);                         // persist migrations/repairs
 ```
 
