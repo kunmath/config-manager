@@ -16,6 +16,14 @@ of; downgrading would silently destroy them. `synchronize()` returns
 ([ADR-008](Architecture.md#adr-008)). Typical responses: refuse to start, or
 run read-only — and never save over the newer file.
 
+### How can firmware recover after a downgrade?
+
+Use the optional [checkpoint component](checkpoint-recovery.md). Capture the
+canonical bytes before an upgrade. After firmware downgrade, the component can
+load the highest compatible checkpoint and `ConfigRuntime` can migrate it
+forward to the version that firmware supports. Recovery is destructive: values
+created only under newer firmware are not preserved.
+
 ### Why did `get<int>` fail on a value that's clearly `8080`?
 
 Check the stored type. Conversions are strict and lossless-only
@@ -62,7 +70,8 @@ keeps upgrades reproducible.
 Backends operate on streams ([ADR-004](Architecture.md#adr-004)). The
 application owns file handling — paths, permissions, atomic-rename strategies,
 encryption — and the same backend then works for sockets and memory buffers,
-and is trivial to test.
+and is trivial to test. The separately linked checkpoint component is a narrow
+filesystem utility for firmware rollback, not a general save/load layer.
 
 ### Can I validate my configuration against a schema?
 

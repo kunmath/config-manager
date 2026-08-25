@@ -30,6 +30,8 @@ const char* errorCodeName(ErrorCode code) {
       return "MissingMigration";
     case ErrorCode::InvalidVersion:
       return "InvalidVersion";
+    case ErrorCode::StorageError:
+      return "StorageError";
   }
   return "UnknownError";
 }

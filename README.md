@@ -85,6 +85,9 @@ Runnable, commented versions of this flow live in [`examples/`](examples/README.
   insertion-order-preserving objects.
 * **Storage agnostic** — backends operate on `std::istream`/`std::ostream`;
   files, memory, sockets, databases are all the application's business.
+* **Firmware rollback checkpoints** — the optional
+  `configmanager::checkpoint` target captures pre-upgrade bytes and can migrate
+  a compatible older checkpoint forward after firmware downgrade.
 * **Dependency-light** — the core links only header-only `tl::expected`; each
   serialization backend is an opt-in CMake target with its own pinned dependency.
 
@@ -153,6 +156,7 @@ inside ConfigManager's own install and needs nothing on the consumer side.
 |---|---|---|
 | `CONFIGMANAGER_BUILD_JSON` | `ON` | Build the JSON backend (`configmanager::json`) |
 | `CONFIGMANAGER_BUILD_XML` | `ON` | Build the XML backend (`configmanager::xml`) |
+| `CONFIGMANAGER_BUILD_CHECKPOINT` | `ON` | Build firmware rollback checkpoints (`configmanager::checkpoint`) |
 | `CONFIGMANAGER_BUILD_TESTS` | `ON` when top-level | Build the GoogleTest unit tests (defaults to `OFF` when consumed via `add_subdirectory`/FetchContent) |
 | `CONFIGMANAGER_BUILD_EXAMPLES` | `ON` when top-level | Build (and register with CTest) the example programs (defaults to `OFF` when consumed via `add_subdirectory`/FetchContent) |
 | `CONFIGMANAGER_USE_SYSTEM_DEPS` | `OFF` | Resolve all dependencies via `find_package` only — no network fetch |
@@ -180,6 +184,7 @@ Start with the [documentation index](docs/README.md).
 * [The data model and paths](docs/model-and-paths.md)
 * [Versioning and migrations](docs/versioning-and-migration.md)
 * [Synchronization and repair](docs/synchronization.md)
+* [Firmware downgrade checkpoints](docs/checkpoint-recovery.md)
 * [Serialization backends](docs/serialization-backends.md) — format mappings and
   how to write your own backend
 * [Error handling](docs/error-handling.md)

@@ -43,6 +43,10 @@ class ConfigRuntime {
   // `supported` is registered (synchronize() does).
   SyncState inspect(const VersionedConfig& cfg, VersionId supported) const;
 
+  // Pure catalog membership query. Does not invoke the version's default
+  // factory or otherwise mutate runtime state.
+  bool supportsVersion(VersionId version) const;
+
   // Transactional: all work happens on a clone; cfg is untouched until the
   // single commit, which happens only when migration or repair actually
   // changed something. The commit move-assigns onto cfg, invalidating every

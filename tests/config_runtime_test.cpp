@@ -1,10 +1,10 @@
 #include "configmanager/config_runtime.hpp"
 
+#include <gtest/gtest.h>
+
 #include <cstdint>
 #include <string>
 #include <utility>
-
-#include <gtest/gtest.h>
 
 namespace configmanager {
 namespace {
@@ -55,7 +55,8 @@ Result<ConfigRuntime> makeRuntime() {
   return ConfigRuntime::create(std::move(catalog), std::move(registry));
 }
 
-// ---- create() -----------------------------------------------------------------
+// ---- create()
+// -----------------------------------------------------------------
 
 TEST(ConfigRuntimeTest, EmptyCatalogRejectedByCreate) {
   auto runtime = ConfigRuntime::create(VersionCatalog{}, MigrationRegistry{});
@@ -73,7 +74,8 @@ TEST(ConfigRuntimeTest, InvalidRegistryRejectedByCreate) {
   EXPECT_EQ(runtime.error().code, ErrorCode::MissingMigration);
 }
 
-// ---- inspect() ------------------------------------------------------------------
+// ---- inspect()
+// ------------------------------------------------------------------
 
 TEST(ConfigRuntimeTest, InspectReportsEachSyncStatus) {
   auto runtime = makeRuntime();
@@ -91,7 +93,23 @@ TEST(ConfigRuntimeTest, InspectReportsEachSyncStatus) {
   EXPECT_EQ(state.targetVersion, 2u);
 }
 
-// ---- synchronize(): validation and downgrade -------------------------------------
+TEST(ConfigRuntimeTest, SupportsVersionQueriesCatalogWithoutRunningFactory) {
+  int factory_calls = 0;
+  VersionCatalog catalog;
+  ASSERT_TRUE(catalog.registerVersion({7, [&factory_calls] {
+                                         ++factory_calls;
+                                         return ConfigValue::object();
+                                       }}));
+  auto runtime = ConfigRuntime::create(std::move(catalog), MigrationRegistry{});
+  ASSERT_TRUE(runtime);
+
+  EXPECT_TRUE(runtime->supportsVersion(7));
+  EXPECT_FALSE(runtime->supportsVersion(8));
+  EXPECT_EQ(factory_calls, 0);
+}
+
+// ---- synchronize(): validation and downgrade
+// -------------------------------------
 
 TEST(ConfigRuntimeTest, UnregisteredSupportedVersionIsInvalidVersion) {
   auto runtime = makeRuntime();
@@ -130,7 +148,8 @@ TEST(ConfigRuntimeTest, UnregisteredPersistedVersionOnUpgradeIsInvalid) {
   EXPECT_EQ(config.version, 1u);  // failed before any work
 }
 
-// ---- synchronize(): upgrade and transactionality ----------------------------------
+// ---- synchronize(): upgrade and transactionality
+// ----------------------------------
 
 TEST(ConfigRuntimeTest, UpgradeMigratesRepairsAndCommits) {
   auto runtime = makeRuntime();
@@ -167,8 +186,8 @@ TEST(ConfigRuntimeTest, FailedMigrationLeavesOriginalUntouched) {
       1, 2, [](MigrationContext& ctx) -> Result<void> {
         return ctx.model().set("mutatedByStepOne", true);
       }));
-  ASSERT_TRUE(registry.registerMigration(
-      2, 3, [](MigrationContext&) -> Result<void> {
+  ASSERT_TRUE(
+      registry.registerMigration(2, 3, [](MigrationContext&) -> Result<void> {
         return fail(ErrorCode::MigrationFailed, "mid-chain failure");
       }));
   auto runtime = ConfigRuntime::create(std::move(catalog), std::move(registry));
@@ -186,7 +205,8 @@ TEST(ConfigRuntimeTest, FailedMigrationLeavesOriginalUntouched) {
   EXPECT_FALSE(config.model.contains("mutatedByStepOne"));
 }
 
-// ---- synchronize(): repair ---------------------------------------------------------
+// ---- synchronize(): repair
+// ---------------------------------------------------------
 
 TEST(ConfigRuntimeTest, RepairRunsOnInSyncDrift) {
   auto runtime = makeRuntime();
@@ -197,8 +217,7 @@ TEST(ConfigRuntimeTest, RepairRunsOnInSyncDrift) {
   ASSERT_TRUE(status);
   EXPECT_EQ(*status, SyncStatus::InSync);
   EXPECT_EQ(config.model.get<std::int64_t>("retries").value(), 3);
-  EXPECT_EQ(config.model.get<std::string>("network.host").value(),
-            "localhost");
+  EXPECT_EQ(config.model.get<std::string>("network.host").value(), "localhost");
   EXPECT_EQ(config.model.get<std::int64_t>("network.timeout").value(), 30);
 }
 
@@ -260,7 +279,8 @@ TEST(ConfigRuntimeTest, RepairPresenceWinsOverShape) {
   EXPECT_FALSE(config.model.contains("network.timeout"));
 }
 
-// ---- createDefault --------------------------------------------------------------
+// ---- createDefault
+// --------------------------------------------------------------
 
 TEST(ConfigRuntimeTest, CreateDefaultBuildsVersionedConfig) {
   auto runtime = makeRuntime();

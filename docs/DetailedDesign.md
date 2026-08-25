@@ -19,7 +19,7 @@ These constraints come directly from the architecture and drive the design:
 | Public APIs never throw | Every fallible boundary returns `Result<T>` |
 | `ConfigModel` holds data only | No `VersionId` anywhere inside the model |
 | `VersionedConfig` is the single source of truth | Migration/sync APIs take only a *target* version |
-| Storage agnostic | Backends operate on `std::istream` / `std::ostream` |
+| Storage agnostic core | Backends operate on `std::istream` / `std::ostream`; the optional checkpoint target owns only firmware rollback files |
 | Nodes are stable handles | Internal arena with generation-checked slots |
 | Synchronization is transactional | Migration + repair run on a working copy, one commit point |
 | No vcpkg dependency for consumers | CMake `FetchContent` + `find_package` fallback, header-only deps, exported package config |
@@ -52,6 +52,9 @@ config-manager/
 │   ├── migration_registry.hpp           # MigrationRegistry
 │   ├── migration_engine.hpp             # MigrationEngine
 │   └── config_runtime.hpp               # ConfigRuntime, SyncState, SyncStatus
+├── checkpoint/                           # OPTIONAL configmanager::checkpoint
+│   ├── include/configmanager/checkpoint_store.hpp
+│   └── src/checkpoint_store.cpp
 ├── src/                                 # implementation (.cpp) mirroring headers
 │   └── ...
 ├── backends/                            # OPTIONAL, per-format targets
@@ -86,6 +89,7 @@ enum class ErrorCode {
     MigrationFailed,
     MissingMigration,
     InvalidVersion,
+    StorageError,
 };
 
 struct Error {
@@ -785,6 +789,7 @@ public:
     create(VersionCatalog catalog, MigrationRegistry registry);   // validates here
 
     SyncState inspect(const VersionedConfig& cfg, VersionId supported) const;
+    bool supportsVersion(VersionId version) const;
 
     Result<SyncStatus> synchronize(VersionedConfig& cfg, VersionId supported);
     Result<SyncStatus> synchronize(VersionedConfig& cfg);   // supported = latestVersion()
@@ -822,6 +827,9 @@ if current >  target -> DowngradeRequired
 `inspect` is pure/const — it never mutates. It performs a plain version
 comparison and does not check whether `supported` is registered; that
 validation happens in `synchronize()`.
+
+`supportsVersion` is a pure catalog-membership query for callers that need to
+validate a target without invoking its `DefaultFactory`.
 
 ### 9.4 synchronize() — the single transactional pipeline (ADR-009)
 
@@ -922,6 +930,68 @@ a key already fails at `fromValue` inside `createDefault`.
 
 ---
 
+## 9A. Firmware Downgrade Checkpoints
+
+The optional `configmanager::checkpoint` target implements ADR-023 without
+changing `ConfigRuntime` or the serialization interface. Its public header is
+not part of the core umbrella header; consumers explicitly include
+`configmanager/checkpoint_store.hpp` and link the component.
+
+```cpp
+struct CheckpointOptions {
+    std::filesystem::path canonical_path;
+    std::filesystem::path checkpoint_directory;
+    std::size_t retention = 2;
+};
+
+Result<CheckpointStore> cpCreate(CheckpointOptions options);
+Result<void> cpCapture(
+    const CheckpointStore&, const VersionedConfig&, IConfigInterface&);
+Result<RestoreSearch> cpPrepareRestore(
+    const CheckpointStore&, IConfigInterface&, ConfigRuntime&, VersionId supported);
+Result<void> cpCommit(
+    const CheckpointStore&, const VersionedConfig&, IConfigInterface&);
+Result<PruneReport> cpPrune(const CheckpointStore&, IConfigInterface&);
+```
+
+`cpCreate` validates paths, rejects a canonical file inside the checkpoint
+directory, and stores policy but performs no writes. `cpCapture` first loads
+the canonical bytes and verifies their embedded version against the supplied
+`VersionedConfig`, then byte-copies them to an exclusively created temporary sibling and atomically
+replaces the checkpoint named by the supplied configuration's authoritative
+version. A same-version capture therefore keeps the freshest compatible state
+without a manifest.
+
+`cpPrepareRestore` enumerates files matching the ten-digit version naming
+shape and canonical extension, but it never trusts the filename as version
+metadata. Every candidate is fully loaded. Candidates newer than the supported
+version are rejected; older candidates are passed through
+`ConfigRuntime::synchronize(candidate, supported)`. Only `InSync` results whose
+final embedded version equals supported qualify. Candidates are attempted from
+highest embedded source version downward, with modification time breaking
+ties, so a failed higher candidate falls back to an older usable one.
+Candidate-specific parse, version, migration, and storage failures are retained in
+`RestoreSearch::rejected`; no qualifying checkpoint is a successful empty
+search.
+
+Preparation never writes the canonical file. `cpCommit` serializes a prepared
+configuration into an exclusively created temporary sibling, preserves an
+existing destination's permission mode, then atomically
+replaces the canonical file as its final operation. This split leaves room for
+application validation. `cpPrune` is also separate and retains the newest
+distinct verified version checkpoints by modification time, so a post-commit
+prune failure cannot make the commit result ambiguous. Candidate-specific
+read, parse, and metadata failures leave those files untouched and appear in
+`PruneReport::rejected`; they do not block retention work on verified files.
+
+On POSIX, replacement uses `rename`; on Windows it uses `MoveFileExW` with
+replacement enabled. These operations
+provide atomic visibility but not power-loss durability; file and parent
+directory synchronization are outside the initial component contract.
+Concurrent writers require application-level locking.
+
+---
+
 ## 10. Error Code Mapping
 
 A single, predictable mapping keeps diagnostics consistent across layers:
@@ -941,6 +1011,7 @@ A single, predictable mapping keeps diagnostics consistent across layers:
 | Malformed or out-of-range version carrier in `load()` | `InvalidVersion` |
 | Empty catalog (`ConfigRuntime::create()`, `latestVersion()`) | `InvalidVersion` |
 | Persisted `config.version` unregistered when an upgrade is required | `InvalidVersion` |
+| Checkpoint filesystem operation failed | `StorageError` |
 | Engine `target` unregistered or below the current version | `InvalidVersion` |
 | User callback threw (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |
 | Empty callable at registration (`MigrationFn` / `DefaultFactory`) | `MigrationFailed` |
@@ -999,6 +1070,8 @@ target_link_libraries(configmanager_core PUBLIC tl::expected)
 
 option(CONFIGMANAGER_BUILD_JSON "..." ON)      # each backend opt-in
 # add_library(configmanager_json ...) -> ALIAS configmanager::json (links nlohmann_json)
+option(CONFIGMANAGER_BUILD_CHECKPOINT "..." ON)
+# add_library(configmanager_checkpoint ...) -> ALIAS configmanager::checkpoint
 
 install(TARGETS configmanager_core ... EXPORT ConfigManagerTargets)
 install(EXPORT ConfigManagerTargets NAMESPACE configmanager:: ...)
@@ -1009,6 +1082,8 @@ configure_package_config_file(cmake/ConfigManagerConfig.cmake.in ...)
   config so `find_package(ConfigManager)` resolves everything.
 * Each format backend is an **opt-in** target: an app needing only versioning
   links `configmanager::core` alone.
+* The checkpoint component is independently optional and links only core; it
+  accepts any backend through `IConfigInterface`.
 
 ---
 
@@ -1016,6 +1091,10 @@ configure_package_config_file(cmake/ConfigManagerConfig.cmake.in ...)
 
 Unit tests target the model and orchestration logic without format backends:
 
+* **Checkpoint recovery**: byte-exact capture, canonical/version consistency,
+  authoritative embedded-version selection, forward migration, rejected
+  candidate fallback, non-throwing backend boundaries, commit failure safety,
+  permission preservation, and retention by verified embedded version.
 * **ConfigPath**: grammar acceptance/rejection, nested arrays, reserved chars,
   empty segments (`a.`, `.a`, `a..b`), malformed indices (`arr[]`, `arr[-1]`,
   `arr[1x]`), leading index, text after `]`, index overflow.

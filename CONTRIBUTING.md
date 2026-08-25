@@ -26,7 +26,7 @@ align with the design docs, bring tests.**
 This project is design-driven. Two documents are normative:
 
 * [docs/Architecture.md](docs/Architecture.md) — principles and the
-  Architectural Decision Records (ADR-001 … ADR-022). **ADRs are binding**:
+  Architectural Decision Records (ADR-001 … ADR-023). **ADRs are binding**:
   a proposal that contradicts one (say, adding downgrade migrations against
   ADR-008, or implicit synchronization against ADR-002) needs to argue for
   changing the ADR itself, not just add code.

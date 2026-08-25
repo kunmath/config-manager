@@ -14,6 +14,11 @@ ConfigManager is intentionally not:
 * A serialization framework
 * A configuration storage framework
 
+The optional checkpoint component is a deliberately narrow exception: it
+provides filesystem mechanics for firmware downgrade recovery while keeping
+recovery policy and all ordinary configuration storage application-owned
+([ADR-023](#adr-023)).
+
 ConfigManager focuses exclusively on:
 
 * Configuration version management
@@ -686,8 +691,9 @@ Synchronization is transactional with respect to the in-memory VersionedConfig.
 * A commit replaces the caller's model, which invalidates every
   ConfigNode handle previously obtained from that configuration (see
   ConfigNode Lifetime).
-* The library never writes to persistent storage. Saving the migrated
-  configuration remains the responsibility of the application.
+* `ConfigRuntime` never writes to persistent storage. Saving the migrated
+  configuration remains the responsibility of the application; the optional
+  checkpoint component writes only when explicitly invoked (ADR-023).
 
 ---
 
@@ -865,7 +871,9 @@ enum class ErrorCode
 
     MissingMigration,
 
-    InvalidVersion
+    InvalidVersion,
+
+    StorageError
 };
 ```
 
@@ -1302,3 +1310,28 @@ document keeps its author's key order through load, mutation, and save,
 and a subtree extracted and re-inserted preserves its member order. One
 ordering rule everywhere keeps serialization and repair deterministic,
 which matters for diffing and reproducible migrations.
+
+---
+
+## ADR-023
+
+Firmware downgrade recovery is provided by an optional, explicit checkpoint
+component rather than reverse migrations or automatic runtime behavior.
+
+`ConfigRuntime` and serialization backends remain stream-based and perform no
+filesystem operations. The separately linked `configmanager::checkpoint`
+component may atomically capture and replace files because correct commit
+ordering is difficult for every application to reproduce independently.
+
+Before an upgrade, the application explicitly captures the canonical file's
+original bytes. On firmware downgrade, it explicitly asks the component to
+find a checkpoint whose embedded version is no newer than the supported
+version. The checkpoint is migrated forward through `ConfigRuntime`, then
+returned in memory so the application can validate it before an explicit
+commit. Reverse migrations are never introduced.
+
+Firmware downgrade detection, recovery after parse failure, retention,
+validation, confirmation, logging, fallback behavior, and concurrent-writer
+coordination remain application policy. No manifest duplicates version
+metadata; `VersionedConfig::version` loaded from each checkpoint is
+authoritative.

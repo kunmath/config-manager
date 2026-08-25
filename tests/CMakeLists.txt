@@ -22,5 +22,10 @@ if(CONFIGMANAGER_BUILD_XML)
   target_link_libraries(configmanager_tests PRIVATE configmanager::xml)
 endif()
 
+if(CONFIGMANAGER_BUILD_CHECKPOINT)
+  target_sources(configmanager_tests PRIVATE checkpoint_store_test.cpp)
+  target_link_libraries(configmanager_tests PRIVATE configmanager::checkpoint)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(configmanager_tests)
