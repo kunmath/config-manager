@@ -173,6 +173,9 @@ class ConfigNode {
   Result<ConfigNode> child(std::string_view key) const;  // object member
   Result<ConfigNode> at(std::size_t index) const;        // array element
   Result<std::vector<std::string>> keys() const;         // object: in order
+  // Object: key/child pairs in order. Prefer this to keys() + child() when
+  // visiting every member, which costs a linear lookup per key.
+  Result<std::vector<std::pair<std::string, ConfigNode>>> members() const;
 
  private:
   friend class ConfigModel;

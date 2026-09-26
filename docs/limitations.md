@@ -37,6 +37,11 @@ design decisions with an ADR behind them, not gaps waiting to be filled.
   `InvalidPath` and deeper persisted documents fail `load()` with
   `ParseError`, keeping the library's recursive tree traversals stack-safe
   ([DetailedDesign.md §4.4](DetailedDesign.md#44-configmodel-public-api-config_modelhpp)).
+* **Built-in loads are resource-bounded.** JSON and XML enforce configurable
+  `LoadLimits` on input bytes and model nodes. The XML backend builds a
+  pugixml DOM before converting it, so its peak memory can reach roughly 20x
+  the input size; lower `maxInputBytes` for tight memory budgets. Checkpoint
+  reads are bounded separately by `CheckpointOptions::max_file_bytes`.
 * **Non-finite doubles do not serialize.** A model can hold `NaN` or
   infinities, but JSON and XML have no representation for them: `save()`
   fails with `SerializationError` instead of silently corrupting the value.

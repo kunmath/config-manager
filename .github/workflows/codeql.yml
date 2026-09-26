@@ -1,0 +1,42 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: C++ analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+
+      # Tests off and the build tree outside the checkout keep fetched
+      # third-party sources (GoogleTest, pugixml, ...) out of the results.
+      - name: Configure
+        run: >
+          cmake -S . -B "${{ runner.temp }}/build"
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCONFIGMANAGER_BUILD_TESTS=OFF
+          -DCONFIGMANAGER_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        run: cmake --build "${{ runner.temp }}/build" --parallel 2
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4

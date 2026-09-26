@@ -37,6 +37,9 @@ auto store = cfg::cpCreate({
 });
 ```
 
+`CheckpointOptions::max_file_bytes` (default 16 MiB) bounds how much of the
+canonical file or any checkpoint is read into memory.
+
 `cpCreate()` validates and normalizes paths but performs no writes. All
 filesystem changes remain explicit.
 
@@ -126,6 +129,9 @@ request confirmation, or abort before calling `cpCommit()`.
   are left untouched and returned in `PruneReport::rejected` for logging or
   operator cleanup; they do not block pruning verified files. A retention of
   zero removes all verified checkpoints.
+* A checkpoint larger than `max_file_bytes` is left untouched and reported as
+  rejected, like a corrupt one. An oversized canonical file fails
+  `cpCapture()` with `StorageError`.
 * Atomic replacement prevents readers from observing a partial file and
   survives process interruption. It is not a power-loss durability guarantee;
   that also requires platform-specific file and directory synchronization.

@@ -195,10 +195,12 @@ public:
     // object/array builders used by default factories & migrations
     ConfigValue& set(std::string key, ConfigValue child);   // object
     ConfigValue& push(ConfigValue child);                   // array
+    bool contains(const std::string& key) const;            // object member?
     // ...
 private:
     Scalar                                            scalar_;
     std::vector<std::pair<std::string, ConfigValue>>  object_;  // insertion-ordered
+    std::unordered_map<std::string, std::size_t>      object_index_;  // key -> object_ slot
     std::vector<ConfigValue>                          array_;
 };
 ```
@@ -287,6 +289,8 @@ public:
     Result<ConfigNode>     at(std::size_t index)        const; // array
     std::size_t            size() const noexcept;              // object/array
     Result<std::vector<std::string>> keys() const;             // object: member names, in order
+    Result<std::vector<std::pair<std::string, ConfigNode>>>
+                           members() const;                    // object: key/child pairs, in order
 
 private:
     const NodeArena*   arena_    = nullptr;   // stable across ConfigModel moves
@@ -307,9 +311,9 @@ Accessor contract:
   (§4.2) and use is undefined behavior, as with container iterators.
 * The `Result`-returning accessors are total: on a **stale** handle they fail
   with `NodeNotFound` (the node is gone); on a type mismatch — `child()` on a
-  non-object, `at()` on a non-array, `keys()` on a non-object, `as<T>()` on a
-  non-scalar or unconvertible scalar — they fail with `InvalidType`. A
-  missing key or out-of-range index is `NodeNotFound`.
+  non-object, `at()` on a non-array, `keys()`/`members()` on a non-object,
+  `as<T>()` on a non-scalar or unconvertible scalar — they fail with
+  `InvalidType`. A missing key or out-of-range index is `NodeNotFound`.
 * The two `noexcept` accessors are preconditioned on `valid()`: calling
   `type()` or `size()` on an invalid handle is a programming error (debug
   assertion; otherwise undefined behavior). `size()` returns the
@@ -942,6 +946,7 @@ struct CheckpointOptions {
     std::filesystem::path canonical_path;
     std::filesystem::path checkpoint_directory;
     std::size_t retention = 2;
+    std::size_t max_file_bytes = 16 * 1024 * 1024;
 };
 
 Result<CheckpointStore> cpCreate(CheckpointOptions options);
@@ -961,6 +966,10 @@ the canonical bytes and verifies their embedded version against the supplied
 replaces the checkpoint named by the supplied configuration's authoritative
 version. A same-version capture therefore keeps the freshest compatible state
 without a manifest.
+
+Canonical and checkpoint reads are bounded by `max_file_bytes`. An oversized
+canonical file fails capture with `StorageError`; an oversized checkpoint is
+reported as rejected by restore and prune.
 
 `cpPrepareRestore` enumerates files matching the ten-digit version naming
 shape and canonical extension, but it never trusts the filename as version
@@ -1048,7 +1057,7 @@ if (NOT tl-expected_FOUND)
   include(FetchContent)
   FetchContent_Declare(tl-expected
     GIT_REPOSITORY https://github.com/TartanLlama/expected.git
-    GIT_TAG        v1.1.0)
+    GIT_TAG        v1.3.1)
   FetchContent_MakeAvailable(tl-expected)
 endif()
 ```
@@ -1059,8 +1068,8 @@ endif()
   required from the consumer's package manager.
 * An option `CONFIGMANAGER_USE_SYSTEM_DEPS=ON` forces `find_package`-only for
   distro packagers who want no network fetch.
-* Pinned dependency tags: `tl-expected v1.1.0`, `nlohmann/json v3.11.3`,
-  `yaml-cpp 0.8.0`, `pugixml v1.14`, `googletest v1.14.0`.
+* Pinned dependency tags: `tl-expected v1.3.1`, `nlohmann/json v3.12.0`,
+  `yaml-cpp 0.8.0`, `pugixml v1.16`, `googletest v1.18.0`.
 
 ### 11.2 Targets and installation
 

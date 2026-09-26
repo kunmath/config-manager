@@ -1,7 +1,7 @@
 # Dependency acquisition: prefer a system/find_package copy, otherwise fetch
 # and build as part of this build (docs/DetailedDesign.md §11.1). Pinned tags:
-#   tl-expected v1.1.0, nlohmann/json v3.11.3, pugixml v1.14,
-#   googletest v1.14.0
+#   tl-expected v1.3.1, nlohmann/json v3.12.0, pugixml v1.16,
+#   googletest v1.18.0
 include(FetchContent)
 
 # ---- tl::expected (Result backend, header-only; the only core dependency) -----
@@ -15,7 +15,7 @@ if(NOT TARGET tl::expected)
   set(EXPECTED_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(tl-expected
     GIT_REPOSITORY https://github.com/TartanLlama/expected.git
-    GIT_TAG        v1.1.0)
+    GIT_TAG        v1.3.1)
   FetchContent_MakeAvailable(tl-expected)
 endif()
 
@@ -31,7 +31,7 @@ if(CONFIGMANAGER_BUILD_JSON)
     set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(nlohmann_json
       GIT_REPOSITORY https://github.com/nlohmann/json.git
-      GIT_TAG        v3.11.3
+      GIT_TAG        v3.12.0
       GIT_SHALLOW    TRUE)
     FetchContent_MakeAvailable(nlohmann_json)
   endif()
@@ -53,7 +53,7 @@ if(CONFIGMANAGER_BUILD_XML)
     # MakeAvailable download without calling add_subdirectory.
     FetchContent_Declare(pugixml
       GIT_REPOSITORY https://github.com/zeux/pugixml.git
-      GIT_TAG        v1.14
+      GIT_TAG        v1.16
       GIT_SHALLOW    TRUE
       SOURCE_SUBDIR  cmake-subdir-not-used)
     FetchContent_MakeAvailable(pugixml)
@@ -75,7 +75,7 @@ if(CONFIGMANAGER_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(googletest
       GIT_REPOSITORY https://github.com/google/googletest.git
-      GIT_TAG        v1.14.0)
+      GIT_TAG        v1.18.0)
     FetchContent_MakeAvailable(googletest)
   endif()
 endif()

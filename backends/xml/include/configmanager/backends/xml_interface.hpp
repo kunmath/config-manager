@@ -2,6 +2,7 @@
 #define CONFIGMANAGER_BACKENDS_XML_INTERFACE_HPP_
 
 #include "configmanager/config_interface.hpp"
+#include "configmanager/load_limits.hpp"
 
 namespace configmanager {
 
@@ -32,12 +33,21 @@ namespace configmanager {
 // (conservative ASCII subset [A-Za-z_][A-Za-z0-9_-]*), strings containing
 // control characters other than tab and newline (XML 1.0 forbids most, and
 // a carriage return cannot survive conformant line-ending normalization),
-// and non-finite doubles.
+// and non-finite doubles. Exceeding a LoadLimits bound fails load() with
+// ParseError.
 class XmlInterface : public IConfigInterface {
  public:
+  XmlInterface() = default;
+  explicit XmlInterface(LoadLimits limits) : limits_(limits) {}
+
   Result<VersionedConfig> load(std::istream& in) override;
   Result<void> save(const VersionedConfig& config,
                     std::ostream& out) override;
+
+  const LoadLimits& limits() const noexcept { return limits_; }
+
+ private:
+  LoadLimits limits_;
 };
 
 }  // namespace configmanager

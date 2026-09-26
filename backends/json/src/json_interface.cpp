@@ -1,5 +1,6 @@
 #include "configmanager/backends/json_interface.hpp"
 
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -10,6 +11,7 @@
 #include <new>
 #include <optional>
 #include <ostream>
+#include <streambuf>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,6 +21,7 @@
 #include "configmanager/config_model.hpp"
 #include "configmanager/config_node.hpp"
 #include "configmanager/config_value.hpp"
+#include "configmanager/load_limits.hpp"
 #include "configmanager/result.hpp"
 #include "configmanager/version.hpp"
 #include "configmanager/versioned_config.hpp"
@@ -34,6 +37,32 @@ constexpr std::uint64_t kMaxVersion =
 constexpr std::uint64_t kMaxInt =
     static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
+// Reads through the stream buffer, like nlohmann's own stream adapter, so a
+// caller's exception mask is not tripped by reaching end-of-file.
+Result<std::string> readBounded(std::istream& in, std::size_t max_bytes) {
+  std::streambuf* buffer = in.rdbuf();
+  if (buffer == nullptr) {
+    return fail(ErrorCode::ParseError, "JSON stream has no buffer");
+  }
+  std::string bytes;
+  std::array<char, 16 * 1024> chunk{};
+  while (true) {
+    const std::streamsize count =
+        buffer->sgetn(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    if (count <= 0) {
+      break;
+    }
+    if (static_cast<std::size_t>(count) > max_bytes - bytes.size()) {
+      return fail(ErrorCode::ParseError,
+                  "JSON document exceeds input limit (" +
+                      std::to_string(max_bytes) + " bytes)");
+    }
+    bytes.append(chunk.data(), static_cast<std::size_t>(count));
+  }
+  in.clear(in.rdstate() | std::ios::eofbit);
+  return bytes;
+}
+
 bool isPathAddressable(const std::string& key) {
   return !key.empty() && key.find_first_of(".[]") == std::string::npos;
 }
@@ -46,6 +75,8 @@ bool isPathAddressable(const std::string& key) {
 // carrier is consumed in place (ADR-020) rather than entering the tree.
 class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
  public:
+  explicit ValueBuilder(const LoadLimits& limits) : limits_(limits) {}
+
   bool null() override { return onScalar(ConfigValue()); }
 
   bool boolean(bool val) override { return onScalar(ConfigValue::of(val)); }
@@ -134,11 +165,9 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
       nextIsCarrier_ = true;
       return true;
     }
-    for (const auto& member : top.container.members()) {
-      if (member.first == val) {
-        return setError(ErrorCode::ParseError,
-                        "duplicate object key '" + val + "'");
-      }
+    if (top.container.contains(val)) {
+      return setError(ErrorCode::ParseError,
+                      "duplicate object key '" + val + "'");
     }
     top.pendingKey = std::move(val);
     return true;
@@ -225,6 +254,18 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
     return true;
   }
 
+  // Containers are counted when they close; at most kMaxTreeDepth are open
+  // and uncounted at any time.
+  bool consumeNode() {
+    if (nodes_ == limits_.maxNodes) {
+      return setError(ErrorCode::ParseError,
+                      "JSON document exceeds node limit (" +
+                          std::to_string(limits_.maxNodes) + ")");
+    }
+    ++nodes_;
+    return true;
+  }
+
   // An attached node sits at depth stack_.size(); completed containers were
   // already depth-checked when they opened.
   bool attach(ConfigValue value) {
@@ -233,6 +274,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
                       "document exceeds the maximum nesting depth (" +
                           std::to_string(kMaxTreeDepth) + ")");
     }
+    if (!consumeNode()) return false;
     Frame& top = stack_.back();
     if (top.container.type() == NodeType::Object) {
       top.container.set(std::move(top.pendingKey), std::move(value));
@@ -246,6 +288,7 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
     ConfigValue done = std::move(stack_.back().container);
     stack_.pop_back();
     if (stack_.empty()) {
+      if (!consumeNode()) return false;
       root_ = std::move(done);
       haveRoot_ = true;
       return true;
@@ -253,6 +296,8 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
     return attach(std::move(done));
   }
 
+  const LoadLimits& limits_;
+  std::size_t nodes_ = 0;
   std::vector<Frame> stack_;
   ConfigValue root_;
   bool haveRoot_ = false;
@@ -261,6 +306,14 @@ class ValueBuilder : public nlohmann::json_sax<OrderedJson> {
   bool nextIsCarrier_ = false;
   std::optional<Error> error_;
 };
+
+// Model keys are already unique, so this appends to ordered_map's underlying
+// vector directly; its operator[] would search every existing member first.
+void appendMember(OrderedJson& object, std::string key, OrderedJson value) {
+  using Members = OrderedJson::object_t::Container;
+  static_cast<Members&>(object.get_ref<OrderedJson::object_t&>())
+      .emplace_back(std::move(key), std::move(value));
+}
 
 // The Result unwraps below are internal invariants, not fallible boundaries:
 // the traversal only requests the type the node reports, on handles taken
@@ -290,13 +343,13 @@ Result<OrderedJson> toJson(const ConfigNode& node, const std::string& name) {
       return OrderedJson(node.as<std::string>().value());
     case NodeType::Object: {
       OrderedJson object = OrderedJson::object();
-      const std::vector<std::string> keys = node.keys().value();
-      for (const std::string& key : keys) {
-        Result<OrderedJson> child = toJson(node.child(key).value(), key);
+      auto members = node.members().value();
+      for (auto& [key, member] : members) {
+        Result<OrderedJson> child = toJson(member, key);
         if (!child) {
           return child;
         }
-        object[key] = std::move(*child);
+        appendMember(object, std::move(key), std::move(*child));
       }
       return object;
     }
@@ -321,8 +374,12 @@ Result<OrderedJson> toJson(const ConfigNode& node, const std::string& name) {
 
 Result<VersionedConfig> JsonInterface::load(std::istream& in) {
   try {
-    ValueBuilder builder;
-    if (!OrderedJson::sax_parse(in, &builder)) {
+    Result<std::string> bytes = readBounded(in, limits_.maxInputBytes);
+    if (!bytes) {
+      return fail(bytes.error().code, std::move(bytes.error().message));
+    }
+    ValueBuilder builder(limits_);
+    if (!OrderedJson::sax_parse(bytes->begin(), bytes->end(), &builder)) {
       Error error = builder.takeError();
       return fail(error.code, std::move(error.message));
     }
@@ -358,13 +415,13 @@ Result<void> JsonInterface::save(const VersionedConfig& config,
     OrderedJson doc = OrderedJson::object();
     doc[kVersionKey] = config.version;
     const ConfigNode root = config.model.root();
-    const std::vector<std::string> keys = root.keys().value();
-    for (const std::string& key : keys) {
-      Result<OrderedJson> child = toJson(root.child(key).value(), key);
+    auto members = root.members().value();
+    for (auto& [key, member] : members) {
+      Result<OrderedJson> child = toJson(member, key);
       if (!child) {
         return fail(child.error().code, std::move(child.error().message));
       }
-      doc[key] = std::move(*child);
+      appendMember(doc, std::move(key), std::move(*child));
     }
     out << doc.dump(2) << '\n';
     if (!out) {

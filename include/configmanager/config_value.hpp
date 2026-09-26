@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -119,6 +120,9 @@ class ConfigValue {
   // Array builder. Appends.
   ConfigValue& push(ConfigValue child);
 
+  // Whether an Object has a member named `key`; false for every other type.
+  bool contains(const std::string& key) const;
+
   const Scalar& scalar() const noexcept { return scalar_; }
   const std::vector<std::pair<std::string, ConfigValue>>& members()
       const noexcept {
@@ -130,6 +134,9 @@ class ConfigValue {
   NodeType type_ = NodeType::Null;
   Scalar scalar_;
   std::vector<std::pair<std::string, ConfigValue>> object_;  // insertion-ordered
+  // Keeps object insertion and replacement O(1) on average while object_
+  // remains the source of truth for deterministic member order.
+  std::unordered_map<std::string, std::size_t> object_index_;
   std::vector<ConfigValue> array_;
 };
 

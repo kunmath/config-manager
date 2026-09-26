@@ -92,6 +92,25 @@ Result<std::vector<std::string>> ConfigNode::keys() const {
   return names;
 }
 
+Result<std::vector<std::pair<std::string, ConfigNode>>> ConfigNode::members()
+    const {
+  const Node* node = findLive(arena_, id_, generation_);
+  if (node == nullptr) {
+    return fail(ErrorCode::NodeNotFound, "stale ConfigNode handle");
+  }
+  if (node->type != NodeType::Object) {
+    return fail(ErrorCode::InvalidType, "members() requires an Object node");
+  }
+  std::vector<std::pair<std::string, ConfigNode>> result;
+  result.reserve(node->members.size());
+  for (const auto& member : node->members) {
+    const NodeId child = member.second;
+    result.emplace_back(member.first,
+                        ConfigNode(arena_, child, arena_->get(child).generation));
+  }
+  return result;
+}
+
 Result<Scalar> ConfigNode::scalarValue() const {
   const Node* node = findLive(arena_, id_, generation_);
   if (node == nullptr) {

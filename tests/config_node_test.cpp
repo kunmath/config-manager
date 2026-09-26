@@ -20,6 +20,7 @@ TEST(ConfigNodeTest, DefaultConstructedHandleIsInvalid) {
   EXPECT_EQ(node.child("a").error().code, ErrorCode::NodeNotFound);
   EXPECT_EQ(node.at(0).error().code, ErrorCode::NodeNotFound);
   EXPECT_EQ(node.keys().error().code, ErrorCode::NodeNotFound);
+  EXPECT_EQ(node.members().error().code, ErrorCode::NodeNotFound);
 }
 
 TEST(ConfigNodeTest, RootIsAlwaysAnObject) {
@@ -141,6 +142,23 @@ TEST(ConfigNodeTest, KeysReturnsMemberNamesInOrder) {
 
   ConfigNode scalar = *model.nodeAt("obj.zebra");
   EXPECT_EQ(scalar.keys().error().code, ErrorCode::InvalidType);
+}
+
+TEST(ConfigNodeTest, MembersReturnsKeysAndChildrenInOrder) {
+  ConfigModel model;
+  ASSERT_TRUE(model.set("obj.zebra", 1));
+  ASSERT_TRUE(model.set("obj.alpha", 2));
+
+  auto members = model.nodeAt("obj")->members();
+  ASSERT_TRUE(members);
+  ASSERT_EQ(members->size(), 2u);
+  EXPECT_EQ((*members)[0].first, "zebra");
+  EXPECT_EQ((*members)[0].second.as<std::int64_t>().value(), 1);
+  EXPECT_EQ((*members)[1].first, "alpha");
+  EXPECT_EQ((*members)[1].second.as<std::int64_t>().value(), 2);
+
+  ConfigNode scalar = *model.nodeAt("obj.zebra");
+  EXPECT_EQ(scalar.members().error().code, ErrorCode::InvalidType);
 }
 
 TEST(ConfigNodeTest, SizeCountsChildrenAndIsZeroForScalars) {

@@ -2,6 +2,7 @@
 #define CONFIGMANAGER_BACKENDS_JSON_INTERFACE_HPP_
 
 #include "configmanager/config_interface.hpp"
+#include "configmanager/load_limits.hpp"
 
 namespace configmanager {
 
@@ -12,12 +13,21 @@ namespace configmanager {
 // else fails load() with InvalidVersion. Integral JSON numbers map to Int and
 // all others to Double; a number outside std::int64_t's range fails load()
 // with ParseError. Duplicate keys and non-path-addressable keys (ADR-021)
-// fail load() with ParseError.
+// fail load() with ParseError. Exceeding a LoadLimits bound fails load() with
+// ParseError.
 class JsonInterface : public IConfigInterface {
  public:
+  JsonInterface() = default;
+  explicit JsonInterface(LoadLimits limits) : limits_(limits) {}
+
   Result<VersionedConfig> load(std::istream& in) override;
   Result<void> save(const VersionedConfig& config,
                     std::ostream& out) override;
+
+  const LoadLimits& limits() const noexcept { return limits_; }
+
+ private:
+  LoadLimits limits_;
 };
 
 }  // namespace configmanager
