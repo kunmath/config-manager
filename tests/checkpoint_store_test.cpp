@@ -237,6 +237,44 @@ TEST_F(CheckpointStoreTest, CaptureRejectsCanonicalVersionMismatch) {
   EXPECT_FALSE(fs::exists(checkpoint(1)));
 }
 
+TEST_F(CheckpointStoreTest, CaptureRejectsCanonicalAboveSizeLimit) {
+  Result<CheckpointStore> limited =
+      cpCreate({.canonical_path = root_ / "limited.cfg",
+                .checkpoint_directory = root_ / "limited-checkpoints",
+                .max_file_bytes = 4});
+  ASSERT_TRUE(limited);
+  writeText(limited->options().canonical_path, "1:42\n");
+  TextBackend backend;
+
+  Result<void> captured = cpCapture(*limited, configAt(1), backend);
+  ASSERT_FALSE(captured);
+  EXPECT_EQ(captured.error().code, ErrorCode::StorageError);
+  EXPECT_NE(captured.error().message.find("size limit"), std::string::npos);
+}
+
+TEST_F(CheckpointStoreTest, OversizedCheckpointIsRejectedNotFatal) {
+  Result<CheckpointStore> limited =
+      cpCreate({.canonical_path = root_ / "limited.cfg",
+                .checkpoint_directory = root_ / "limited-checkpoints",
+                .max_file_bytes = 5});
+  ASSERT_TRUE(limited);
+  const fs::path& directory = limited->options().checkpoint_directory;
+  writeText(directory / "0000000001.cfg", "1:11\n");
+  writeText(directory / "0000000002.cfg", "2:222222\n");
+  Result<ConfigRuntime> runtime = makeRuntime();
+  ASSERT_TRUE(runtime);
+  TextBackend backend;
+
+  Result<RestoreSearch> search =
+      cpPrepareRestore(*limited, backend, *runtime, 2);
+  ASSERT_TRUE(search) << search.error().message;
+  ASSERT_TRUE(search->candidate);
+  EXPECT_EQ(search->candidate->source_version, 1u);
+  ASSERT_EQ(search->rejected.size(), 1u);
+  EXPECT_EQ(search->rejected.front().path, directory / "0000000002.cfg");
+  EXPECT_EQ(search->rejected.front().error.code, ErrorCode::StorageError);
+}
+
 TEST_F(CheckpointStoreTest, BackendExceptionsAreMappedToErrors) {
   writeText(store_->options().canonical_path, "1:42\n");
   ThrowingBackend backend;

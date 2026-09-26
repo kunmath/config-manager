@@ -364,6 +364,70 @@ TEST(JsonInterfaceTest, DeepArrayNestingIsParseError) {
   EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
 }
 
+TEST(JsonInterfaceTest, ConfigurableInputLimitIsEnforced) {
+  LoadLimits limits;
+  limits.maxInputBytes = 10;
+  JsonInterface backend(limits);
+  std::istringstream input(R"({"__version": 1})");
+  auto loaded = backend.load(input);
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+  EXPECT_NE(loaded.error().message.find("input limit"), std::string::npos);
+}
+
+TEST(JsonInterfaceTest, InputAtExactLimitLoads) {
+  const std::string document = R"({"__version": 1})";
+  LoadLimits limits;
+  limits.maxInputBytes = document.size();
+  JsonInterface backend(limits);
+  std::istringstream input(document);
+  auto loaded = backend.load(input);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+}
+
+TEST(JsonInterfaceTest, NodeLimitIncludesRoot) {
+  const std::string document = R"({"__version": 1, "a": [1]})";
+  LoadLimits limits;
+  limits.maxNodes = 2;  // root, "a", and its element need three
+  JsonInterface limited(limits);
+  std::istringstream limited_input(document);
+  auto rejected = limited.load(limited_input);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code, ErrorCode::ParseError);
+  EXPECT_NE(rejected.error().message.find("node limit"), std::string::npos);
+
+  limits.maxNodes = 3;
+  JsonInterface exact(limits);
+  std::istringstream exact_input(document);
+  auto loaded = exact.load(exact_input);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+}
+
+TEST(JsonInterfaceTest, LoadHonorsInputExceptionMask) {
+  std::istringstream input(R"({"__version": 1})");
+  input.exceptions(std::ios::badbit | std::ios::failbit);
+  auto loaded = JsonInterface{}.load(input);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+  EXPECT_FALSE(input.fail());
+  EXPECT_TRUE(input.eof());
+}
+
+TEST(JsonInterfaceTest, WideObjectRoundTripsInOrder) {
+  std::string document = R"({"__version": 1)";
+  for (int i = 0; i < 2000; ++i) {
+    document += ",\"k" + std::to_string(i) + "\": " + std::to_string(i);
+  }
+  document += "}";
+  auto loaded = loadText(document);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+  auto reloaded = loadText(saveToText(*loaded));
+  ASSERT_TRUE(reloaded) << reloaded.error().message;
+  const auto keys = reloaded->model.root().keys().value();
+  ASSERT_EQ(keys.size(), 2000u);
+  EXPECT_EQ(keys.front(), "k0");
+  EXPECT_EQ(keys.back(), "k1999");
+}
+
 TEST(JsonInterfaceTest, NonFiniteDoubleFailsSaveWithSerializationError) {
   const double nonFinite[] = {std::numeric_limits<double>::infinity(),
                               -std::numeric_limits<double>::infinity(),

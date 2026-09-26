@@ -101,6 +101,15 @@ TEST(ConfigValueTest, SetExistingKeyReplacesInPlace) {
   EXPECT_EQ(members[1].first, "second");
 }
 
+TEST(ConfigValueTest, ContainsFindsObjectMembersOnly) {
+  auto value = ConfigValue::object();
+  value.set("present", ConfigValue::of(1));
+  EXPECT_TRUE(value.contains("present"));
+  EXPECT_FALSE(value.contains("absent"));
+  EXPECT_FALSE(ConfigValue::array().contains("present"));
+  EXPECT_FALSE(ConfigValue::of(1).contains("present"));
+}
+
 TEST(ConfigValueTest, PushAppendsInOrder) {
   auto value = ConfigValue::array();
   value.push(ConfigValue::of(1))

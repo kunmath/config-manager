@@ -1,5 +1,6 @@
 #include "configmanager/backends/xml_interface.hpp"
 
+#include <array>
 #include <cassert>
 #include <charconv>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <new>
 #include <optional>
 #include <ostream>
+#include <streambuf>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -22,6 +24,7 @@
 #include "configmanager/config_model.hpp"
 #include "configmanager/config_node.hpp"
 #include "configmanager/config_value.hpp"
+#include "configmanager/load_limits.hpp"
 #include "configmanager/result.hpp"
 #include "configmanager/version.hpp"
 #include "configmanager/versioned_config.hpp"
@@ -34,6 +37,52 @@ constexpr char kVersionAttr[] = "version";
 constexpr char kTypeAttr[] = "type";
 constexpr char kItemName[] = "item";
 constexpr std::uint64_t kMaxVersion = std::numeric_limits<VersionId>::max();
+
+// Reads through the stream buffer so a caller's exception mask is not
+// tripped by reaching end-of-file.
+Result<std::string> readBounded(std::istream& in, std::size_t max_bytes) {
+  std::streambuf* buffer = in.rdbuf();
+  if (buffer == nullptr) {
+    return fail(ErrorCode::ParseError, "XML stream has no buffer");
+  }
+  std::string bytes;
+  std::array<char, 16 * 1024> chunk{};
+  while (true) {
+    const std::streamsize count =
+        buffer->sgetn(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    if (count <= 0) {
+      break;
+    }
+    if (static_cast<std::size_t>(count) > max_bytes - bytes.size()) {
+      return fail(ErrorCode::ParseError,
+                  "XML document exceeds input limit (" +
+                      std::to_string(max_bytes) + " bytes)");
+    }
+    bytes.append(chunk.data(), static_cast<std::size_t>(count));
+  }
+  in.clear(in.rdstate() | std::ios::eofbit);
+  return bytes;
+}
+
+// Counts model nodes (LoadLimits::maxNodes) while the DOM is converted.
+class NodeBudget {
+ public:
+  explicit NodeBudget(std::size_t max_nodes) : max_nodes_(max_nodes) {}
+
+  Result<void> consume() {
+    if (nodes_ == max_nodes_) {
+      return fail(ErrorCode::ParseError,
+                  "XML document exceeds node limit (" +
+                      std::to_string(max_nodes_) + ")");
+    }
+    ++nodes_;
+    return {};
+  }
+
+ private:
+  std::size_t max_nodes_;
+  std::size_t nodes_ = 0;
+};
 
 // parse_ws_pcdata keeps whitespace-only text nodes: they are formatting
 // inside containers but significant inside string scalars (e.g. <s>  </s>).
@@ -170,7 +219,7 @@ Result<VersionId> parseVersionCarrier(std::string_view text) {
 }
 
 Result<ConfigValue> parseValue(const pugi::xml_node& element,
-                               std::size_t depth);
+                               std::size_t depth, NodeBudget& budget);
 
 bool hasElementChildren(const pugi::xml_node& element) {
   for (const pugi::xml_node& child : element.children()) {
@@ -202,7 +251,7 @@ Result<std::string> scalarText(const pugi::xml_node& element) {
 
 // `depth` is the element's node depth in the model, the <config> root at 0.
 Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element,
-                                       std::size_t depth) {
+                                       std::size_t depth, NodeBudget& budget) {
   ConfigValue object = ConfigValue::object();
   for (const pugi::xml_node& child : element.children()) {
     switch (child.type()) {
@@ -219,14 +268,12 @@ Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element,
                       "element name '" + key +
                           "' is not a valid XML name in this mapping");
         }
-        for (const auto& member : object.members()) {
-          if (member.first == key) {
-            return fail(ErrorCode::ParseError,
-                        "repeated sibling element '" + key + "' under '" +
-                            std::string(element.name()) + "'");
-          }
+        if (object.contains(key)) {
+          return fail(ErrorCode::ParseError,
+                      "repeated sibling element '" + key + "' under '" +
+                          std::string(element.name()) + "'");
         }
-        Result<ConfigValue> value = parseValue(child, depth + 1);
+        Result<ConfigValue> value = parseValue(child, depth + 1, budget);
         if (!value) {
           return value;
         }
@@ -249,7 +296,7 @@ Result<ConfigValue> parseObjectMembers(const pugi::xml_node& element,
 }
 
 Result<ConfigValue> parseArrayItems(const pugi::xml_node& element,
-                                    std::size_t depth) {
+                                    std::size_t depth, NodeBudget& budget) {
   ConfigValue array = ConfigValue::array();
   for (const pugi::xml_node& child : element.children()) {
     switch (child.type()) {
@@ -260,7 +307,7 @@ Result<ConfigValue> parseArrayItems(const pugi::xml_node& element,
                           "' must contain only <item> children, got '" +
                           child.name() + "'");
         }
-        Result<ConfigValue> value = parseValue(child, depth + 1);
+        Result<ConfigValue> value = parseValue(child, depth + 1, budget);
         if (!value) {
           return value;
         }
@@ -325,13 +372,16 @@ Result<ConfigValue> parseDoubleText(const std::string& text,
 }
 
 Result<ConfigValue> parseValue(const pugi::xml_node& element,
-                               std::size_t depth) {
+                               std::size_t depth, NodeBudget& budget) {
   // Checked on the way down, so the parse recursion itself stays bounded
   // even for a hostile document (§4.4).
   if (depth > kMaxTreeDepth) {
     return fail(ErrorCode::ParseError,
                 "document exceeds the maximum nesting depth (" +
                     std::to_string(kMaxTreeDepth) + ")");
+  }
+  if (Result<void> consumed = budget.consume(); !consumed) {
+    return fail(consumed.error().code, std::move(consumed.error().message));
   }
   const char* type = nullptr;
   for (const pugi::xml_attribute& attr : element.attributes()) {
@@ -356,7 +406,7 @@ Result<ConfigValue> parseValue(const pugi::xml_node& element,
     // carries type="object", §6.1); otherwise its text is a String and a
     // bare empty element is the empty string.
     if (hasElementChildren(element)) {
-      return parseObjectMembers(element, depth);
+      return parseObjectMembers(element, depth, budget);
     }
     Result<std::string> text = scalarText(element);
     if (!text) {
@@ -371,8 +421,8 @@ Result<ConfigValue> parseValue(const pugi::xml_node& element,
   }
 
   const std::string_view typeName(type);
-  if (typeName == "object") return parseObjectMembers(element, depth);
-  if (typeName == "array") return parseArrayItems(element, depth);
+  if (typeName == "object") return parseObjectMembers(element, depth, budget);
+  if (typeName == "array") return parseArrayItems(element, depth, budget);
   if (typeName == "null" || typeName == "bool" || typeName == "int" ||
       typeName == "double") {
     Result<std::string> text = scalarText(element);
@@ -417,10 +467,9 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
 // from a live model. value() throwing would be a library bug and is caught
 // by save()'s catch-all (ADR-018).
 Result<void> appendMembers(pugi::xml_node element, const ConfigNode& object) {
-  const std::vector<std::string> keys = object.keys().value();
-  for (const std::string& key : keys) {
-    Result<void> appended =
-        appendValueElement(element, key, object.child(key).value());
+  const auto members = object.members().value();
+  for (const auto& [key, member] : members) {
+    Result<void> appended = appendValueElement(element, key, member);
     if (!appended) {
       return appended;
     }
@@ -533,8 +582,14 @@ Result<void> appendValueElement(pugi::xml_node parent, const std::string& name,
 
 Result<VersionedConfig> XmlInterface::load(std::istream& in) {
   try {
+    // Parsed in place: doc borrows the buffer, so bytes must outlive it.
+    Result<std::string> bytes = readBounded(in, limits_.maxInputBytes);
+    if (!bytes) {
+      return fail(bytes.error().code, std::move(bytes.error().message));
+    }
     pugi::xml_document doc;
-    const pugi::xml_parse_result parsed = doc.load(in, kParseFlags);
+    const pugi::xml_parse_result parsed =
+        doc.load_buffer_inplace(bytes->data(), bytes->size(), kParseFlags);
     if (!parsed) {
       return fail(ErrorCode::ParseError,
                   std::string("XML parse failed: ") + parsed.description());
@@ -606,7 +661,12 @@ Result<VersionedConfig> XmlInterface::load(std::istream& in) {
                   "attribute)");
     }
 
-    Result<ConfigValue> rootValue = parseObjectMembers(root, /*depth=*/0);
+    NodeBudget budget(limits_.maxNodes);
+    if (Result<void> consumed = budget.consume(); !consumed) {
+      return fail(consumed.error().code, std::move(consumed.error().message));
+    }
+    Result<ConfigValue> rootValue =
+        parseObjectMembers(root, /*depth=*/0, budget);
     if (!rootValue) {
       return fail(rootValue.error().code,
                   std::move(rootValue.error().message));

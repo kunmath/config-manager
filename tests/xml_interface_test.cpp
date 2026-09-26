@@ -245,6 +245,73 @@ TEST(XmlInterfaceTest, DocumentAtMaxTreeDepthLoads) {
   ASSERT_TRUE(loaded) << loaded.error().message;
 }
 
+TEST(XmlInterfaceTest, ConfigurableInputLimitIsEnforced) {
+  LoadLimits limits;
+  limits.maxInputBytes = 10;
+  XmlInterface backend(limits);
+  std::istringstream input(R"(<config version="1"/>)");
+  auto loaded = backend.load(input);
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code, ErrorCode::ParseError);
+  EXPECT_NE(loaded.error().message.find("input limit"), std::string::npos);
+}
+
+TEST(XmlInterfaceTest, InputAtExactLimitLoads) {
+  const std::string document = R"(<config version="1"/>)";
+  LoadLimits limits;
+  limits.maxInputBytes = document.size();
+  XmlInterface backend(limits);
+  std::istringstream input(document);
+  auto loaded = backend.load(input);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+}
+
+TEST(XmlInterfaceTest, NodeLimitIncludesRoot) {
+  const std::string document =
+      R"(<config version="1"><a type="array"><item>1</item></a></config>)";
+  LoadLimits limits;
+  limits.maxNodes = 2;  // root, <a>, and its item need three
+  XmlInterface limited(limits);
+  std::istringstream limited_input(document);
+  auto rejected = limited.load(limited_input);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code, ErrorCode::ParseError);
+  EXPECT_NE(rejected.error().message.find("node limit"), std::string::npos);
+
+  limits.maxNodes = 3;
+  XmlInterface exact(limits);
+  std::istringstream exact_input(document);
+  auto loaded = exact.load(exact_input);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+}
+
+TEST(XmlInterfaceTest, WideObjectRoundTripsInOrder) {
+  std::string document = R"(<config version="1">)";
+  for (int i = 0; i < 2000; ++i) {
+    const std::string name = "k" + std::to_string(i);
+    document += "<" + name + " type=\"int\">" + std::to_string(i) + "</" +
+                name + ">";
+  }
+  document += "</config>";
+  auto loaded = loadText(document);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+  auto reloaded = loadText(saveToText(*loaded));
+  ASSERT_TRUE(reloaded) << reloaded.error().message;
+  const auto keys = reloaded->model.root().keys().value();
+  ASSERT_EQ(keys.size(), 2000u);
+  EXPECT_EQ(keys.front(), "k0");
+  EXPECT_EQ(keys.back(), "k1999");
+}
+
+TEST(XmlInterfaceTest, LoadHonorsInputExceptionMask) {
+  std::istringstream input(R"(<config version="1"/>)");
+  input.exceptions(std::ios::badbit | std::ios::failbit);
+  auto loaded = XmlInterface{}.load(input);
+  ASSERT_TRUE(loaded) << loaded.error().message;
+  EXPECT_FALSE(input.fail());
+  EXPECT_TRUE(input.eof());
+}
+
 TEST(XmlInterfaceTest, DuplicateTypeAttributeOnRootIsParseError) {
   auto loaded =
       loadText(R"(<config version="1" type="object" type="object"/>)");

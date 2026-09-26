@@ -106,7 +106,7 @@ not the `ConfigModel` object:
   owner.
 * **Removing a node invalidates its handles detectably**: `valid()` returns
   false, and `Result`-returning accessors (`as<T>()`, `child()`, `at()`,
-  `keys()`) fail with `NodeNotFound`. The `noexcept` accessors (`type()`,
+  `keys()`, `members()`) fail with `NodeNotFound`. The `noexcept` accessors (`type()`,
   `size()`) require a valid handle as a precondition.
 * **Destroying a model invalidates handles undetectably** — including
   move-assigning another model onto it, and including a committing

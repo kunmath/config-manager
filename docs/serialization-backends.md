@@ -16,6 +16,21 @@ Backends operate on streams, never filesystem paths
 ([ADR-004](Architecture.md#adr-004)) — opening files, sockets, or memory
 buffers is the application's business.
 
+The built-in backends apply configurable `LoadLimits`: by default at most
+4 MiB of input and 100,000 model nodes (including the root). The input bound is
+checked before parsing and also caps every string, key, and container; the node
+bound caps how far a small input can expand in memory. Construct a backend with
+tighter or larger limits when appropriate for the application:
+
+```cpp
+cfg::LoadLimits limits;
+limits.maxInputBytes = 512 * 1024;
+limits.maxNodes = 10'000;
+cfg::JsonInterface json(limits);
+```
+
+Limit violations fail `load()` with `ParseError`; no partial model is returned.
+
 ## Available backends
 
 | Format | Header | Target | Version carrier | Reserved model path |
@@ -60,6 +75,9 @@ rationale.
 * **Nesting depth is bounded.** A document nested deeper than `kMaxTreeDepth`
   (128, see [limitations](limitations.md)) fails `load()` with `ParseError`
   before any model is built.
+* **Resource use is bounded.** The built-in JSON and XML backends enforce their
+  configured `LoadLimits` on input bytes and model nodes. Custom backends
+  should provide equivalent limits.
 * **Backends never throw** ([ADR-018](Architecture.md#adr-018)). Exceptions
   from parser libraries or stream operations (including streams with exception
   masks set) are caught inside and mapped to `ParseError` in `load()` /
@@ -127,8 +145,8 @@ library by implementing `IConfigInterface`. The checklist:
    and adopt it via `ConfigModel::fromValue()`, which enforces the
    object-root and path-addressable-key rules for you (`InvalidType` /
    `InvalidPath` — map these to `ParseError` diagnostics at your boundary).
-4. **Enforce, on load:** mandatory strictly-parsed version carrier
-   (`InvalidVersion`), object document root (`ParseError`), unique keys
+4. **Enforce, on load:** resource limits, a mandatory strictly-parsed version
+   carrier (`InvalidVersion`), object document root (`ParseError`), unique keys
    (`ParseError` — your parser may resolve duplicates silently; detect them
    yourself, e.g. the JSON backend parses SAX-style for exactly this reason),
    preserved member order (pick an order-preserving parser mode).

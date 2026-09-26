@@ -61,7 +61,7 @@ void removeTemporary(const fs::path& path) {
   fs::remove(path, ignored);
 }
 
-Result<std::string> readFileBytes(const fs::path& path) {
+Result<std::string> readFileBytes(const fs::path& path, std::size_t max_bytes) {
   std::ifstream input(path, std::ios::binary);
   if (!input.is_open()) {
     return fail(ErrorCode::StorageError,
@@ -72,7 +72,13 @@ Result<std::string> readFileBytes(const fs::path& path) {
   std::array<char, 16 * 1024> buffer{};
   while (input) {
     input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    bytes.append(buffer.data(), static_cast<std::size_t>(input.gcount()));
+    const std::size_t count = static_cast<std::size_t>(input.gcount());
+    if (count > max_bytes - bytes.size()) {
+      return fail(ErrorCode::StorageError,
+                  "file '" + path.string() + "' exceeds size limit (" +
+                      std::to_string(max_bytes) + " bytes)");
+    }
+    bytes.append(buffer.data(), count);
   }
   if (!input.eof()) {
     return fail(ErrorCode::StorageError,
@@ -357,7 +363,8 @@ Result<void> cpCaptureImpl(const CheckpointStore& store,
                            const VersionedConfig& config,
                            IConfigInterface& backend) {
   const CheckpointOptions& options = store.options();
-  Result<std::string> bytes = readFileBytes(options.canonical_path);
+  Result<std::string> bytes =
+      readFileBytes(options.canonical_path, options.max_file_bytes);
   if (!bytes) {
     return fail(bytes.error().code, std::move(bytes.error().message));
   }
@@ -427,7 +434,8 @@ Result<RestoreSearch> cpPrepareRestoreImpl(const CheckpointStore& store,
   RestoreSearch search;
   std::vector<LoadedCandidate> candidates;
   for (const fs::path& path : *paths) {
-    Result<std::string> bytes = readFileBytes(path);
+    Result<std::string> bytes =
+        readFileBytes(path, store.options().max_file_bytes);
     if (!bytes) {
       search.rejected.push_back({path, std::move(bytes.error())});
       continue;
@@ -534,7 +542,8 @@ Result<PruneReport> cpPruneImpl(const CheckpointStore& store,
   PruneReport report;
   std::map<VersionId, std::vector<CheckpointFile>> versions;
   for (const fs::path& path : *paths) {
-    Result<std::string> bytes = readFileBytes(path);
+    Result<std::string> bytes =
+        readFileBytes(path, store.options().max_file_bytes);
     if (!bytes) {
       report.rejected.push_back({path, std::move(bytes.error())});
       continue;

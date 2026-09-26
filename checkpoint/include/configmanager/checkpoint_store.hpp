@@ -19,6 +19,9 @@ struct CheckpointOptions {
   std::filesystem::path canonical_path;
   std::filesystem::path checkpoint_directory;
   std::size_t retention = 2;
+  // Canonical and checkpoint files larger than this are not read: capture
+  // fails and restore/prune report the file as rejected.
+  std::size_t max_file_bytes = 16 * 1024 * 1024;
 };
 
 class CheckpointStore {
